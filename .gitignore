@@ -35,3 +35,16 @@ yarn-error.*
 
 # typescript
 *.tsbuildinfo
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+
+# Node / React Native
+node_modules/
+.expo/
+.expo-shared/
+*.apk
+*.keystore
