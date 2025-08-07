@@ -30,9 +30,10 @@ export default function App() {
     formData.append('content', content);
 
     try {
-      const response = await fetch(`${backendBaseURL}/`, {
-        method: 'POST',
-        body: formData,
+      const response = await fetch(`${backendBaseURL}/analyze`, {
+  method: 'POST',
+  body: formData,
+});
       });
 
       const data = await response.json();
