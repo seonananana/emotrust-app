@@ -28,16 +28,23 @@ app.add_middleware(
 # 분석 요청 처리
 @app.post("/analyze")
 async def analyze(title: str = Form(...), content: str = Form(...)):
-    prompt = f"""제목: {title}
-내용: {content}
+    prompt = f"""
+    제목: {title}
+    내용: {content}
 
-이 글에서 감정 점수(0~100)를 추정하고, 진정성 점수(0~100)도 추정해줘.
+    이 글을 읽고 아래 기준으로 감정 점수와 진정성 점수를 각각 추정해줘.
 
-**반드시 JSON 형식으로만 응답해줘.**
-아무 설명도 붙이지 말고 아래 형식 그대로 리턴해줘.
+    [감정 점수 기준]
+    - 감정 표현이 강하고 명확할수록 높은 점수
+    - 감정이 거의 드러나지 않으면 낮은 점수
 
-예시:
-{{"emotion_score": 78, "truth_score": 92}}"""
+    [진정성 점수 기준]
+    - 내용이 사실적이고 구체적일수록 높은 점수
+    - 내용이 모호하거나 과장되어 있으면 낮은 점수
+
+    결과는 반드시 JSON 형식으로만 응답해줘. 예시:
+    {{"emotion_score": 78, "truth_score": 92}}
+    """
 
     try:
         response = requests.post(
