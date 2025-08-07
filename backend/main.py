@@ -1,17 +1,14 @@
 from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
-from openai import OpenAI
-from dotenv import load_dotenv
 import os
+import requests
+from dotenv import load_dotenv
 
 # 🔐 .env에서 API 키 불러오기
 print("🔐 .env 파일 불러오는 중...")
 load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("OPENROUTER_API_KEY")  # ✅ 키 이름도 변경
 print(f"✅ API 키: {api_key[:8]}...")  # 보안상 일부만 출력
-
-# OpenAI 클라이언트 객체 생성
-client = OpenAI(api_key=api_key)
 
 # FastAPI 앱 초기화
 app = FastAPI()
@@ -35,15 +32,26 @@ async def analyze(title: str = Form(...), content: str = Form(...)):
 {{"emotion_score": 78, "truth_score": 92}}"""
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "너는 감정 분석 전문가야."},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.7,
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "mistralai/mixtral-8x7b-instruct",  # ✅ 모델명 확정
+                "messages": [
+                    {"role": "system", "content": "너는 감정 분석 전문가야."},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.7
+            }
         )
-        content = response.choices[0].message.content
-        return eval(content)  # 개발 중 편의용. 배포 전 json.loads 권장
+
+        response.raise_for_status()
+        data = response.json()
+        result_text = data["choices"][0]["message"]["content"]
+        return eval(result_text)  # 개발 중 편의용. 실서비스는 json.loads 권장
+
     except Exception as e:
-        return {"error": f"GPT 분석 중 오류 발생: {str(e)}"}
+        return {"error": f"OpenRouter 분석 중 오류 발생: {str(e)}"}
