@@ -31,9 +31,9 @@ export default function App() {
 
     try {
       const response = await fetch(`${backendBaseURL}/analyze`, {
-  method: 'POST',
-  body: formData,
-});
+      method: 'POST',
+      body: formData,
+      });
       });
 
       const data = await response.json();
