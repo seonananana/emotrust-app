@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import os
 import requests
 import json
+import subprocess
+import re
 from dotenv import load_dotenv
 
 # 🔐 .env에서 API 키 불러오기
@@ -25,7 +27,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 분석 요청 처리
+# ✅ ngrok 주소 확인용 API
+@app.get("/ngrok-url")
+async def get_ngrok_url():
+    try:
+        result = subprocess.check_output(["curl", "http://127.0.0.1:4040/api/tunnels"])
+        result = result.decode("utf-8")
+        match = re.search(r'"public_url":"(https:\/\/[^"]+)"', result)
+        if match:
+            url = match.group(1)
+            return {"ngrok_url": url}
+        else:
+            return {"error": "ngrok 주소를 찾을 수 없습니다"}
+    except Exception as e:
+        return {"error": str(e)}
+
+# 🧠 감정/진정성 분석 요청 처리
 @app.post("/analyze")
 async def analyze(title: str = Form(...), content: str = Form(...)):
     prompt = f"""
