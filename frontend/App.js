@@ -16,13 +16,12 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // ✅ 주소 자동 분기
+  // ✅ 백엔드 주소 분기 (모바일 vs 웹)
   const isMobile = Platform.OS === 'ios' || Platform.OS === 'android';
-
   const backendBaseURL = Constants.manifest?.debuggerHost
     ? `http://${Constants.manifest.debuggerHost.split(':')[0]}:8000`
     : 'http://localhost:8000';
-  
+
   const handleSubmit = async () => {
     setLoading(true);
     setResult(null);
@@ -33,14 +32,14 @@ export default function App() {
 
     try {
       const response = await fetch(`${backendBaseURL}/analyze`, {
-      method: 'POST',
-      body: formData,
-      });
+        method: 'POST',
+        body: formData,
       });
 
       const data = await response.json();
       setResult(data);
     } catch (error) {
+      console.error('요청 실패:', error);
       setResult({ error: '요청 실패' });
     } finally {
       setLoading(false);
@@ -66,7 +65,11 @@ export default function App() {
         multiline
       />
 
-      <Button title={loading ? '분석 중...' : '분석 요청'} onPress={handleSubmit} disabled={loading} />
+      <Button
+        title={loading ? '분석 중...' : '분석 요청'}
+        onPress={handleSubmit}
+        disabled={loading}
+      />
 
       {result && result.emotion_score !== undefined && (
         <View style={styles.resultBox}>
