@@ -18,9 +18,9 @@ export default function App() {
 
   // ✅ 백엔드 주소 분기 (모바일 vs 웹)
   const isMobile = Platform.OS === 'ios' || Platform.OS === 'android';
-  const backendBaseURL = Constants.manifest?.debuggerHost
-    ? `http://${Constants.manifest.debuggerHost.split(':')[0]}:8000`
-    : 'http://localhost:8000';
+  const backendBaseURL = isMobile
+  ? 'http://172.30.1.66:8000'   // 실제 휴대폰에서 접속할 백엔드 주소
+  : 'http://localhost:8000';    // 웹에서 테스트할 때 주소
 
   const handleSubmit = async () => {
     setLoading(true);
