@@ -8,6 +8,7 @@ import {
   ScrollView,
   Platform,
 } from 'react-native';
+import Constants from 'expo-constants';
 
 export default function App() {
   const [title, setTitle] = useState('');
@@ -17,10 +18,11 @@ export default function App() {
 
   // ✅ 주소 자동 분기
   const isMobile = Platform.OS === 'ios' || Platform.OS === 'android';
-  const backendBaseURL = isMobile
-    ? 'http://192.168.137.1:8000' // 스마트폰 (핫스팟 연결)=>놑북-폰
-    : 'http://localhost:8000';   // 노트북에서 개발 중일 경우
 
+  const backendBaseURL = Constants.manifest?.debuggerHost
+    ? `http://${Constants.manifest.debuggerHost.split(':')[0]}:8000`
+    : 'http://localhost:8000';
+  
   const handleSubmit = async () => {
     setLoading(true);
     setResult(null);
