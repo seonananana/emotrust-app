@@ -2,13 +2,16 @@ from fastapi import FastAPI, Form
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import requests
+import json
 from dotenv import load_dotenv
 
 # 🔐 .env에서 API 키 불러오기
 print("🔐 .env 파일 불러오는 중...")
 load_dotenv()
-api_key = os.getenv("OPENROUTER_API_KEY")  # ✅ 키 이름도 변경
-print(f"✅ API 키: {api_key[:8]}...")  # 보안상 일부만 출력
+api_key = os.getenv("OPENROUTER_API_KEY")
+if not api_key:
+    raise ValueError("❌ .env에서 OPENROUTER_API_KEY를 불러오지 못했습니다.")
+print(f"✅ API 키 앞자리: {api_key[:8]}...")
 
 # FastAPI 앱 초기화
 app = FastAPI()
@@ -16,7 +19,7 @@ app = FastAPI()
 # CORS 허용 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 배포 시에는 특정 origin으로 제한 권장
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -27,8 +30,13 @@ app.add_middleware(
 async def analyze(title: str = Form(...), content: str = Form(...)):
     prompt = f"""제목: {title}
 내용: {content}
+
 이 글에서 감정 점수(0~100)를 추정하고, 진정성 점수(0~100)도 추정해줘.
-결과는 JSON 형식으로만 응답해줘. 예시:
+
+**반드시 JSON 형식으로만 응답해줘.**
+아무 설명도 붙이지 말고 아래 형식 그대로 리턴해줘.
+
+예시:
 {{"emotion_score": 78, "truth_score": 92}}"""
 
     try:
@@ -39,7 +47,7 @@ async def analyze(title: str = Form(...), content: str = Form(...)):
                 "Content-Type": "application/json"
             },
             json={
-                "model": "mistralai/mixtral-8x7b-instruct",  # ✅ 모델명 확정
+                "model": "mistralai/mixtral-8x7b-instruct",
                 "messages": [
                     {"role": "system", "content": "너는 감정 분석 전문가야."},
                     {"role": "user", "content": prompt}
@@ -51,7 +59,16 @@ async def analyze(title: str = Form(...), content: str = Form(...)):
         response.raise_for_status()
         data = response.json()
         result_text = data["choices"][0]["message"]["content"]
-        return eval(result_text)  # 개발 중 편의용. 실서비스는 json.loads 권장
+        print("🧠 모델 응답 내용:", result_text)
+
+        try:
+            result = json.loads(result_text)
+            return result
+        except json.JSONDecodeError:
+            return {
+                "error": "❌ 모델 응답이 JSON 형식이 아닙니다",
+                "raw_response": result_text
+            }
 
     except Exception as e:
         return {"error": f"OpenRouter 분석 중 오류 발생: {str(e)}"}
