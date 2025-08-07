@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   TextInput,
@@ -8,19 +8,44 @@ import {
   ScrollView,
   Platform,
 } from 'react-native';
-import Constants from 'expo-constants';
 
 export default function App() {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [backendURL, setBackendURL] = useState('');
 
-  // ✅ 백엔드 주소 분기 (모바일 vs 웹)
-  const isMobile = Platform.OS === 'ios' || Platform.OS === 'android';
-  const backendBaseURL = isMobile
-  ? 'http://172.30.1.66:8000'   // 실제 휴대폰에서 접속할 백엔드 주소
-  : 'http://localhost:8000';    // 웹에서 테스트할 때 주소
+  // ✅ 초기에 ngrok 주소 가져오기 (모바일일 때만)
+  useEffect(() => {
+    const fetchNgrokURL = async () => {
+      if (Platform.OS === 'ios' || Platform.OS === 'android') {
+        try {
+          // 로컬 개발 머신 IP 고정 (Linux, macOS 등에서 실행 중인 백엔드 IP)
+          const localIP = '172.30.1.66'; // <- 여기 본인 IP로 설정
+          const url = `http://${localIP}:8000/ngrok-url`;
+
+          const res = await fetch(url);
+          const data = await res.json();
+
+          if (data.ngrok_url) {
+            setBackendURL(data.ngrok_url);
+          } else {
+            console.warn('⚠️ ngrok 주소 못 가져옴, fallback 사용');
+            setBackendURL(`http://${localIP}:8000`);
+          }
+        } catch (error) {
+          console.warn('❌ ngrok 주소 요청 실패:', error);
+          setBackendURL(`http://${localIP}:8000`);
+        }
+      } else {
+        // 웹일 경우
+        setBackendURL('http://localhost:8000');
+      }
+    };
+
+    fetchNgrokURL();
+  }, []);
 
   const handleSubmit = async () => {
     setLoading(true);
@@ -31,7 +56,7 @@ export default function App() {
     formData.append('content', content);
 
     try {
-      const response = await fetch(`${backendBaseURL}/analyze`, {
+      const response = await fetch(`${backendURL}/analyze`, {
         method: 'POST',
         body: formData,
       });
@@ -68,7 +93,7 @@ export default function App() {
       <Button
         title={loading ? '분석 중...' : '분석 요청'}
         onPress={handleSubmit}
-        disabled={loading}
+        disabled={loading || !backendURL}
       />
 
       {result && result.emotion_score !== undefined && (
@@ -82,6 +107,9 @@ export default function App() {
       {result?.error && (
         <View style={styles.resultBox}>
           <Text style={{ color: 'red' }}>{result.error}</Text>
+          {result.raw_response && (
+            <Text style={{ marginTop: 10 }}>{result.raw_response}</Text>
+          )}
         </View>
       )}
     </ScrollView>
