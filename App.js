@@ -1,35 +1,48 @@
 import React, { useState } from 'react';
-import { View, TextInput, Button, Text, StyleSheet, ScrollView } from 'react-native';
+import {
+  View,
+  TextInput,
+  Button,
+  Text,
+  StyleSheet,
+  ScrollView,
+  Platform,
+} from 'react-native';
 
 export default function App() {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [result, setResult] = useState(null);
-
   const [loading, setLoading] = useState(false);
 
-const handleSubmit = async () => {
-  setLoading(true);
-  setResult(null);
+  // ✅ 주소 자동 분기
+  const isMobile = Platform.OS === 'ios' || Platform.OS === 'android';
+  const backendBaseURL = isMobile
+    ? 'http://192.168.137.1:8000' // 스마트폰 (핫스팟 연결)=>놑북-폰
+    : 'http://localhost:8000';   // 노트북에서 개발 중일 경우
 
-  const formData = new FormData();
-  formData.append('title', title);
-  formData.append('content', content);
+  const handleSubmit = async () => {
+    setLoading(true);
+    setResult(null);
 
-  try {
-    const response = await fetch('http://172.20.10.2:8000/analyze', {
-      method: 'POST',
-      body: formData,
-    });
+    const formData = new FormData();
+    formData.append('title', title);
+    formData.append('content', content);
 
-    const data = await response.json();
-    setResult(data);
-  } catch (error) {
-    setResult({ error: '요청 실패' });
-  } finally {
-    setLoading(false);
-  }
-};
+    try {
+      const response = await fetch(`${backendBaseURL}/`, {
+        method: 'POST',
+        body: formData,
+      });
+
+      const data = await response.json();
+      setResult(data);
+    } catch (error) {
+      setResult({ error: '요청 실패' });
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <ScrollView contentContainerStyle={styles.container}>
@@ -50,15 +63,21 @@ const handleSubmit = async () => {
         multiline
       />
 
-      <Button title="분석 요청" onPress={handleSubmit} />
+      <Button title={loading ? '분석 중...' : '분석 요청'} onPress={handleSubmit} disabled={loading} />
 
       {result && result.emotion_score !== undefined && (
-  <View style={styles.resultBox}>
-    <Text>📊 분석 결과</Text>
-    <Text>감정 점수: {result.emotion_score}</Text>
-    <Text>진정성 점수: {result.truth_score}</Text>
-  </View>
-)}
+        <View style={styles.resultBox}>
+          <Text>📊 분석 결과</Text>
+          <Text>감정 점수: {result.emotion_score}</Text>
+          <Text>진정성 점수: {result.truth_score}</Text>
+        </View>
+      )}
+
+      {result?.error && (
+        <View style={styles.resultBox}>
+          <Text style={{ color: 'red' }}>{result.error}</Text>
+        </View>
+      )}
     </ScrollView>
   );
 }

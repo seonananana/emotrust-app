@@ -2,26 +2,35 @@ from fastapi import FastAPI, UploadFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
 import json
+import os
+from dotenv import load_dotenv
 import openai
+
+# 🔐 .env에서 API 키 불러오기
+print("🔐 .env 파일 불러오는 중...")
+load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+print(f"✅ API 키: {api_key}")
+openai.api_key = api_key
 
 app = FastAPI()
 
-# CORS 허용 (모바일 앱에서 호출 가능하도록)
+# 🌐 CORS 허용 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 배포 시에는 앱 도메인만 허용하는 것이 보안상 안전
+    allow_origins=["*"],  # ⚠️ 배포 시에는 특정 도메인으로 제한할 것
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# 📥 감정 분석 요청 처리
 @app.post("/analyze")
 async def analyze_emotion(
     title: str = Form(...),
     content: str = Form(...),
     file: Optional[UploadFile] = None
 ):
-    # 🤖 GPT 요청 프롬프트 (내가 처리)
     prompt = f"""
     제목: {title}
     내용: {content}
@@ -33,23 +42,31 @@ async def analyze_emotion(
     아래 형식의 JSON으로 정확히 반환해줘:
 
     {{
-        "emotion_score": [0.0 ~ 1.0 숫자],
-        "truth_score": [0.0 ~ 1.0 숫자]
+        "emotion_score": 0.87,
+        "truth_score": 0.92
     }}
     """
 
-    # 🧠 ChatGPT에게 전달할 프롬프트로 나를 호출
+    # 🔁 GPT 호출
     result = await chatgpt_emotion_analysis(prompt)
-
-    # 결과를 JSON으로 반환
     return result
 
-# 💬 ChatGPT 호출 로직 (실제로 내가 수행)
+# 🤖 실제 OpenAI GPT-4 호출
 async def chatgpt_emotion_analysis(prompt: str):
-    # 여기선 실제 GPT API 대신 내가 직접 응답
-    # 앞으로 여기에서 내가 분석한 내용을 가상 응답처럼 넘겨줌
-    # 예시 응답:
-    return {
-        "emotion_score": 0.82,
-        "truth_score": 0.91
-    }
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-4",  # 또는 "gpt-3.5-turbo"
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.7
+        )
+        result_text = response.choices[0].message.content.strip()
+
+        # GPT가 JSON처럼 응답한다고 가정
+        return json.loads(result_text)
+
+    except Exception as e:
+        return {"error": f"GPT 분석 중 오류 발생: {str(e)}"}
+
+@app.get("/")
+def root():
+    return {"message": "Hello emotrust"}
