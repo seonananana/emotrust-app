@@ -16,36 +16,34 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [backendURL, setBackendURL] = useState('');
 
-  // ✅ 초기에 ngrok 주소 가져오기 (모바일일 때만)
   useEffect(() => {
-    const fetchNgrokURL = async () => {
-      if (Platform.OS === 'ios' || Platform.OS === 'android') {
-        try {
-          // 로컬 개발 머신 IP 고정 (Linux, macOS 등에서 실행 중인 백엔드 IP)
-          const localIP = '172.30.1.66'; // <- 여기 본인 IP로 설정
-          const url = `http://${localIP}:8000/ngrok-url`;
+  const fetchNgrokURL = async () => {
+    if (Platform.OS === 'ios' || Platform.OS === 'android') {
+      try {
+        const localIP = '172.30.1.66'; // 너의 백엔드가 실행 중인 IP
+        const url = `http://${localIP}:8000/ngrok-url`;
 
-          const res = await fetch(url);
-          const data = await res.json();
+        const res = await fetch(url);
+        const data = await res.json();
 
-          if (data.ngrok_url) {
-            setBackendURL(data.ngrok_url);
-          } else {
-            console.warn('⚠️ ngrok 주소 못 가져옴, fallback 사용');
-            setBackendURL(`http://${localIP}:8000`);
-          }
-        } catch (error) {
-          console.warn('❌ ngrok 주소 요청 실패:', error);
+        if (data.ngrok_url) {
+          console.log("✅ ngrok 주소 받아옴:", data.ngrok_url); // 👈 여기 추가
+          setBackendURL(data.ngrok_url);
+        } else {
+          console.warn("⚠️ ngrok 주소 못 받아 fallback 사용");
           setBackendURL(`http://${localIP}:8000`);
         }
-      } else {
-        // 웹일 경우
-        setBackendURL('http://localhost:8000');
+      } catch (error) {
+        console.warn('❌ ngrok 주소 요청 실패:', error);
+        setBackendURL(`http://${localIP}:8000`);
       }
-    };
+    } else {
+      setBackendURL('http://localhost:8000');
+    }
+  };
 
-    fetchNgrokURL();
-  }, []);
+  fetchNgrokURL();
+}, []);
 
   const handleSubmit = async () => {
     setLoading(true);
