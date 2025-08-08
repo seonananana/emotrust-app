@@ -6,6 +6,8 @@ import json
 import subprocess
 import re
 from dotenv import load_dotenv
+from fastapi import HTTPException
+from datetime import datetime
 
 # 🔐 .env에서 API 키 불러오기
 print("🔐 .env 파일 불러오는 중...")
