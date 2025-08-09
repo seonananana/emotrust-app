@@ -47,12 +47,16 @@ app = FastAPI(title="emotrust-backend", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"] if ALLOW_ORIGINS == ["*"] else ALLOW_ORIGINS,
+    allow_origins=[
+        "http://localhost:80000",           # Expo web (필요 시)
+        "exp://*",                          # Expo 개발 링크 (대략)
+        "http://172.30.1.42:8000",        # 개발기기에서
+        "https://d08f268191da.ngrok-free.app, # ngrok 쓰면 이거!
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # ────────────────────────────────────────────────────────────────────────────────
 # 모델/스키마
 # ────────────────────────────────────────────────────────────────────────────────
