@@ -1,13 +1,31 @@
-# analyzer.py
+# analyzer.py (all-in-one)
 import os, math, re, csv, unicodedata
+from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
 
-# 외부에서 제공되는 도우미 (네 프로젝트 기준)
-from scoring import PreSignals, clamp01
+# =========================
+# 공용 유틸/데이터 컨테이너
+# =========================
+def clamp01(x) -> float:
+    try:
+        x = float(x)
+    except Exception:
+        return 0.0
+    if x < 0.0: return 0.0
+    if x > 1.0: return 1.0
+    return x
 
-# -------------------------
+@dataclass
+class PreSignals:
+    s_acc: float   # KoBERT 정확도 유사 점수 [0,1]
+    s_sinc: float  # 진정성 점수 [0,1]
+    def __post_init__(self):
+        self.s_acc = clamp01(self.s_acc)
+        self.s_sinc = clamp01(self.s_sinc)
+
+# =========================
 # 전처리
-# -------------------------
+# =========================
 _url_re = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 
 def preprocess_text(text: str) -> str:
@@ -20,9 +38,9 @@ def preprocess_text(text: str) -> str:
     t = re.sub(r"\s+", " ", t).strip().lower()
     return t
 
-# -------------------------
+# =========================
 # KoBERT 임베딩 → 정확도 점수
-# -------------------------
+# =========================
 import torch
 
 class KobertScorer:
@@ -30,7 +48,7 @@ class KobertScorer:
     - backbone: KoBERT (동결)
     - head: Linear(768->1) optional, state_dict 로드
     - 확률: sigmoid(logit / T)
-    - 풀링: mean pooling (mask 적용) 기본, "cls" 옵션 가능
+    - 풀링: mean pooling(mask) 기본, "cls" 옵션 가능
     """
     def __init__(self, device: Optional[str] = None,
                  head_path: Optional[str] = None,
@@ -58,14 +76,12 @@ class KobertScorer:
 
     @staticmethod
     def _mean_pool(last_hidden_state, attention_mask):
-        # last_hidden_state: [B,L,H], attention_mask: [B,L]
         mask = attention_mask.unsqueeze(-1)                 # [B,L,1]
         summed = (last_hidden_state * mask).sum(dim=1)      # [B,H]
         counts = mask.sum(dim=1).clamp(min=1)               # [B,1]
         return summed / counts
 
     def encode(self, text: str) -> torch.Tensor:
-        """전처리된 text를 받아 [H] 임베딩 반환"""
         if not text:
             return torch.zeros(self.hidden_size, device=self.device)
         batch = self.tok(text, return_tensors="pt", truncation=True, max_length=256)
@@ -81,14 +97,13 @@ class KobertScorer:
     @torch.inference_mode()
     def score(self, text: str) -> float:
         vec = self.encode(text)
-        # 학습된 헤드가 있으면 사용
         if self.head is not None:
-            logit = self.head(vec.unsqueeze(0)).squeeze(0)  # scalar tensor
+            logit = self.head(vec.unsqueeze(0)).squeeze(0)
             T = max(1e-3, float(self.temperature))
             prob = torch.sigmoid(logit / T).item()
             return clamp01(prob)
 
-        # 임시 휴리스틱(헤드 미사용 시): ||h||를 포화함수로 매핑
+        # 임시 휴리스틱(헤드 미사용 시)
         k = float(os.environ.get("KOBERT_NORM_K", "20.0"))
         norm = torch.linalg.vector_norm(vec).item()
         prob = 1.0 - math.exp(-(norm / k))
@@ -108,9 +123,9 @@ def get_kobert() -> KobertScorer:
         _kobert = KobertScorer(device=device, head_path=head, pooling=pooling)
     return _kobert
 
-# -------------------------
-# 진정성: 감정어 사전 기반 평균 (CSV)
-# -------------------------
+# =========================
+# 진정성: 감정어 사전 기반 평균 (CSV 로딩 포함)
+# =========================
 # 숫자 제외: 짧은/잡음 토큰이 분모를 키우는 문제 완화
 _word_re = re.compile(r"[A-Za-z가-힣]+", re.UNICODE)
 
@@ -121,6 +136,11 @@ class LexiconScorer:
         self._load(path, word_col, score_col)
 
     def _load(self, path: str, word_col: Optional[str], score_col: Optional[str]):
+        """
+        CSV에서 (word, score) 추출
+        - 경로: EMO_LEXICON_PATH 환경변수로 지정 권장
+        - 컬럼 자동 추정: word/token/lemma/단어/용어, score/value/val/점수/가중치
+        """
         with open(path, "r", encoding="utf-8") as f:
             sniffer = csv.Sniffer()
             sample = f.read(2048)
@@ -144,7 +164,7 @@ class LexiconScorer:
             self.min_v, self.max_v = min(vals), max(vals)
 
     def _norm(self, x: float) -> float:
-        # 사전 점수가 [0,1] 범위가 아니면 min-max 정규화
+        # 사전 점수가 [0,1]이 아니면 min-max 정규화
         if self.min_v < 0.0 or self.max_v > 1.0:
             if self.max_v == self.min_v:
                 return 0.0
@@ -154,9 +174,9 @@ class LexiconScorer:
     def sincerity(self, text: str, mode: str = "all", alpha: float = 2.0) -> Tuple[float,int,int,float]:
         """
         returns: (S_sinc, matched_count, total_tokens, coverage)
-        mode='all'    → N = 전체 단어 수 + alpha (라플라스 스무딩)
+        mode='all'    → N = 전체 단어 수 + alpha
         mode='matched'→ N = 일치 단어 수 + alpha
-        alpha         → 짧은 글 과대평가 방지
+        alpha         → 라플라스 스무딩(짧은 글 과대평가 방지)
         """
         if not text:
             return 0.0, 0, 0, 0.0
@@ -169,11 +189,10 @@ class LexiconScorer:
 
         N = (max(1, matched) if mode == "matched" else total) + alpha
         s = (sum(matched_scores) / N) if N > 0 else 0.0
-        cov = matched / max(1, total)  # coverage = 일치비율
-
+        cov = matched / max(1, total)
         return clamp01(s), matched, total, cov
 
-# 전역 사전 로더
+# 전역 사전 로더 (CSV 경로 환경변수 지원)
 _lex: Optional[LexiconScorer] = None
 def get_lexicon() -> LexiconScorer:
     global _lex
@@ -184,15 +203,14 @@ def get_lexicon() -> LexiconScorer:
         _lex = LexiconScorer(path, wcol, scol)
     return _lex
 
-# -------------------------
+# =========================
 # 파이프라인 (전처리 + KoBERT + CSV사전)
-# -------------------------
+# =========================
 def pre_pipeline(text: str, denom_mode: str = "all",
                  w_acc: float = 0.5, w_sinc: float = 0.5,
                  gate: float = 0.70):
     """
     반환 dict에는 디버깅/로깅용 지표 포함.
-    배포 게이트 정책은 이 결과를 참조해 결정.
     """
     clean = preprocess_text(text)
 
@@ -217,7 +235,7 @@ def pre_pipeline(text: str, denom_mode: str = "all",
         "clean_text": clean,
     }
 
-# 기존 인터페이스 유지용 (최종 점수 계산 전 단계)
+# 기존 인터페이스 유지용
 async def build_pre_signals(content: str, denom_mode: str = "all") -> PreSignals:
     clean = preprocess_text(content)
     s_acc = get_kobert().score(clean)
