@@ -1,7 +1,16 @@
-# analyzer.py (all-in-one)
-import os, math, re, csv, unicodedata
+# analyzer.py (all-in-one, integrated pipeline)
+import os
+import re
+import csv
+import math
+import json
+import uuid
+import torch
+import hashlib
+import unicodedata
+import datetime
 from dataclasses import dataclass
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 # =========================
 # 공용 유틸/데이터 컨테이너
@@ -11,8 +20,10 @@ def clamp01(x) -> float:
         x = float(x)
     except Exception:
         return 0.0
-    if x < 0.0: return 0.0
-    if x > 1.0: return 1.0
+    if x < 0.0:
+        return 0.0
+    if x > 1.0:
+        return 1.0
     return x
 
 @dataclass
@@ -22,16 +33,16 @@ class PreSignals:
     def __post_init__(self):
         self.s_acc = clamp01(self.s_acc)
         self.s_sinc = clamp01(self.s_sinc)
+
 # =========================
 # PII 필터 + 전처리
 # =========================
-import re, unicodedata
 
 # --- PII 패턴들 ---
-RRN_RE   = re.compile(r"\b\d{6}[- ]?\d{7}\b")          # 주민등록번호 (단순 패턴)
-CARD_RE  = re.compile(r"\b(?:\d[ -]*?){13,19}\b")      # 신용카드 후보(룬 체크로 확정)
-ACC_RE   = re.compile(r"\b\d{10,14}\b")                # 은행계좌(단순 후보)
-ROAD_RE  = re.compile(                                 # 도로명 주소 간단 패턴
+RRN_RE   = re.compile(r"\b\d{6}[- ]?\d{7}\b")  # 주민등록번호 (단순 패턴)
+CARD_RE  = re.compile(r"\b(?:\d[ -]*?){13,19}\b")  # 신용카드 후보(룬 체크로 확정)
+ACC_RE   = re.compile(r"\b\d{10,14}\b")        # 은행계좌(단순 후보)
+ROAD_RE  = re.compile(                         # 도로명 주소 간단 패턴
     r"\b[가-힣0-9A-Za-z]+(?:로|길|대로)\s?\d+(?:-\d+)?(?:\s?\d+호|\s?\d+층)?\b"
 )
 
@@ -45,7 +56,8 @@ def _luhn_ok(num_str: str) -> bool:
     for i, d in enumerate(digits):
         if i % 2 == parity:
             d = d * 2
-            if d > 9: d -= 9
+            if d > 9:
+                d -= 9
         s += d
     return s % 10 == 0
 
@@ -59,7 +71,7 @@ def moderate_text(text: str):
       * 신용카드(룬 통과): block
       * 계좌번호/도로명주소: 마스킹
     """
-    reasons = []
+    reasons: List[str] = []
 
     # 하드 차단: 주민등록번호
     if RRN_RE.search(text):
@@ -73,9 +85,11 @@ def moderate_text(text: str):
     # 마스킹 대상
     masked = text
     before = masked
+
     if ACC_RE.search(masked):
         masked = ACC_RE.sub("[REDACTED:ACCOUNT]", masked)
         reasons.append("bank_account")
+
     if ROAD_RE.search(masked):
         masked = ROAD_RE.sub("[REDACTED:ROAD]", masked)
         if "road_address" not in reasons:
@@ -84,7 +98,7 @@ def moderate_text(text: str):
     action = "allow_masked" if masked != before else "allow"
     return action, masked, reasons
 
-# --- 기존 전처리 (URL/제로폭/공백/소문자/NFKC) ---
+# --- 전처리 (URL/제로폭/공백/소문자/NFKC) ---
 _url_re = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 
 def preprocess_text(text: str) -> str:
@@ -109,11 +123,27 @@ def moderate_then_preprocess(raw_text: str):
         return action, "", reasons
     clean = preprocess_text(masked)
     return action, clean, reasons
-    
+
+# (선택) 감사 로그: 원문 저장 금지, 마스킹 텍스트 해시만 저장
+def log_moderation_event(action: str, reasons: List[str], masked_text: str, sink_path: str = "moderation.log") -> str:
+    event = {
+        "event_id": str(uuid.uuid4()),
+        "ts": datetime.datetime.utcnow().isoformat() + "Z",
+        "action": action,                       # "block" | "allow" | "allow_masked"
+        "reasons": reasons,                     # ["resident_id", ...]
+        "masked_hash": hashlib.sha256(masked_text.encode("utf-8")).hexdigest() if masked_text else "",
+        "masked_preview": masked_text[:120] if masked_text else "",
+    }
+    try:
+        with open(sink_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    return event["event_id"]
+
 # =========================
 # KoBERT 임베딩 → 정확도 점수
 # =========================
-import torch
 
 class KobertScorer:
     """
@@ -148,6 +178,7 @@ class KobertScorer:
 
     @staticmethod
     def _mean_pool(last_hidden_state, attention_mask):
+        # last_hidden_state: [B,L,H], attention_mask: [B,L]
         mask = attention_mask.unsqueeze(-1)                 # [B,L,1]
         summed = (last_hidden_state * mask).sum(dim=1)      # [B,H]
         counts = mask.sum(dim=1).clamp(min=1)               # [B,1]
@@ -163,7 +194,7 @@ class KobertScorer:
             if self.pooling == "cls":
                 vec = out.last_hidden_state[:, 0, :]  # [1,H]
             else:
-                vec = self._mean_pool(out.last_hidden_state, batch["attention_mask"])
+                vec = self._mean_pool(out.last_hidden_state, batch["attention_mask"])  # [1,H]
         return vec.squeeze(0)  # [H]
 
     @torch.inference_mode()
@@ -276,40 +307,66 @@ def get_lexicon() -> LexiconScorer:
     return _lex
 
 # =========================
-# 파이프라인 (전처리 + KoBERT + CSV사전)
+# 파이프라인 (PII → 전처리 → KoBERT → CSV)
 # =========================
 def pre_pipeline(text: str, denom_mode: str = "all",
                  w_acc: float = 0.5, w_sinc: float = 0.5,
                  gate: float = 0.70):
     """
-    반환 dict에는 디버깅/로깅용 지표 포함.
+    [1] PII 필터 → [2] 전처리 → [3] KoBERT → [4] CSV → [5] 결합/게이트
+    반환 dict에는 PII 처리 결과(action/reasons)도 포함.
     """
-    clean = preprocess_text(text)
+    # [1] PII 필터 + 마스킹/차단 + 전처리
+    action, clean_candidate, reasons = moderate_then_preprocess(text)
 
+    # (선택) 감사 로그 남기기 — 원문 저장 금지, 마스킹 텍스트만
+    try:
+        log_moderation_event(action, reasons, clean_candidate)
+    except Exception:
+        pass
+
+    if action == "block":
+        return {
+            "pii_action": action,            # "block"
+            "pii_reasons": reasons,          # ["resident_id"] 등
+            "S_acc": 0.0, "S_sinc": 0.0,
+            "S_pre": 0.0, "gate_pass": False,
+            "tokens": 0, "matched": 0, "total": 0, "coverage": 0.0,
+            "clean_text": "", "masked": False,
+        }
+
+    # [2] 전처리까지 완료된 텍스트
+    clean = clean_candidate
+    masked = (action == "allow_masked")
+
+    # [3] KoBERT
     kob = get_kobert()
     S_acc = kob.score(clean)
 
+    # [4] CSV 진정성
     lex = get_lexicon()
     S_sinc, matched, total, cov = lex.sincerity(clean, mode=denom_mode)
 
+    # [5] 결합/게이트
     S_pre = w_acc * S_acc + w_sinc * S_sinc
     gate_pass = (S_pre >= gate)
 
     return {
-        "S_acc": S_acc,
-        "S_sinc": S_sinc,
-        "S_pre": S_pre,
-        "gate_pass": gate_pass,
+        "pii_action": action,               # "allow" | "allow_masked"
+        "pii_reasons": reasons,             # 마스킹 이유 코드 목록(없으면 [])
+        "S_acc": S_acc, "S_sinc": S_sinc,
+        "S_pre": S_pre, "gate_pass": gate_pass,
         "tokens": kob.tokens_count(clean),
-        "matched": matched,
-        "total": total,
-        "coverage": cov,
+        "matched": matched, "total": total, "coverage": cov,
         "clean_text": clean,
+        "masked": masked,
     }
 
-# 기존 인터페이스 유지용
+# 기존 인터페이스 유지용 (게이트 전 사전신호)
 async def build_pre_signals(content: str, denom_mode: str = "all") -> PreSignals:
-    clean = preprocess_text(content)
+    action, clean, reasons = moderate_then_preprocess(content)
+    if action == "block":
+        return PreSignals(s_acc=0.0, s_sinc=0.0)
     s_acc = get_kobert().score(clean)
     s_sinc, _, _, _ = get_lexicon().sincerity(clean, mode=denom_mode)
     return PreSignals(s_acc=s_acc, s_sinc=s_sinc)
