@@ -1,3 +1,5 @@
+throw new Error("MARKER: This App.js is being bundled");
+
 // App.js
 import React, { useState, useEffect, useMemo } from 'react';
 import {
