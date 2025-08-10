@@ -1,4 +1,4 @@
-# analyzer.py (all-in-one, integrated pipeline)
+# analyzer.py (all-in-one, integrated pipeline, PII FP/FN 개선 반영)
 import os
 import re
 import csv
@@ -37,13 +37,27 @@ class PreSignals:
 # =========================
 # PII 필터 + 전처리
 # =========================
-
 # --- PII 패턴들 ---
-RRN_RE   = re.compile(r"\b\d{6}[- ]?\d{7}\b")  # 주민등록번호 (단순 패턴)
-CARD_RE  = re.compile(r"\b(?:\d[ -]*?){13,19}\b")  # 신용카드 후보(룬 체크로 확정)
-ACC_RE   = re.compile(r"\b\d{10,14}\b")        # 은행계좌(단순 후보)
-ROAD_RE  = re.compile(                         # 도로명 주소 간단 패턴
+# 주민등록번호: 캡처 그룹 + 체크섬 검증으로 FP 감소
+RRN_RE   = re.compile(r"\b(\d{6})[- ]?(\d{7})\b")
+
+# 신용카드 후보(룬 체크로 확정)
+CARD_RE  = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
+
+# 은행계좌(단순 후보) + 컨텍스트 키워드 동시 매칭 시에만 마스킹
+ACC_RE   = re.compile(r"\b\d{10,14}\b")
+ACC_CTX  = re.compile(
+    r"(계좌|입금|송금|이체|무통장|bank|account|농협|국민|신한|우리|하나|"
+    r"카카오|토스|케이뱅크|ibk|기업|수협|새마을|우체국)", re.IGNORECASE
+)
+
+# 도로명 주소 간단 패턴 + 컨텍스트 키워드 동시 매칭 시에만 마스킹
+ROAD_RE  = re.compile(
     r"\b[가-힣0-9A-Za-z]+(?:로|길|대로)\s?\d+(?:-\d+)?(?:\s?\d+호|\s?\d+층)?\b"
+)
+ROAD_CTX = re.compile(
+    r"(주소|도로명|배달|택배|배송|거주|거주지|집|사무실|건물|아파트|빌라|오피스텔|"
+    r"호\b|동\b|층\b|번지|우편번호)"
 )
 
 def _luhn_ok(num_str: str) -> bool:
@@ -61,20 +75,35 @@ def _luhn_ok(num_str: str) -> bool:
         s += d
     return s % 10 == 0
 
+def _rrn_ok(six: str, seven: str) -> bool:
+    """주민등록번호 체크섬 검증 (YYMMDD-ABCDEFG, 마지막 G는 검증숫자)"""
+    try:
+        nums = [int(c) for c in six + seven]
+        if len(nums) != 13:
+            return False
+        weights = [2,3,4,5,6,7,8,9,2,3,4,5]
+        s = sum(a*b for a, b in zip(nums[:12], weights))
+        check = (11 - (s % 11)) % 10
+        return check == nums[12]
+    except Exception:
+        return False
+
 def moderate_text(text: str):
     """
     반환: (action, masked_text, reasons)
     - action: "block" | "allow" | "allow_masked"
     - reasons: 탐지 사유 코드 리스트
-    정책(기본):
-      * 주민등록번호: block
-      * 신용카드(룬 통과): block
-      * 계좌번호/도로명주소: 마스킹
+    정책(개선):
+      * 주민등록번호: 체크섬 통과 시 block (형식만 맞으면 X)
+      * 신용카드: Luhn 통과 시 block
+      * 계좌번호: 숫자패턴 + 컨텍스트 동시 매칭 시 mask
+      * 도로명주소: 주소패턴 + 컨텍스트 동시 매칭 시 mask
     """
     reasons: List[str] = []
 
-    # 하드 차단: 주민등록번호
-    if RRN_RE.search(text):
+    # 하드 차단: 주민등록번호(체크섬까지 통과해야 block)
+    m_rrn = RRN_RE.search(text)
+    if m_rrn and _rrn_ok(m_rrn.group(1), m_rrn.group(2)):
         return "block", text, ["resident_id"]
 
     # 하드 차단: 신용카드(룬 통과 시에만)
@@ -82,18 +111,19 @@ def moderate_text(text: str):
         if _luhn_ok(m.group()):
             return "block", text, ["credit_card"]
 
-    # 마스킹 대상
+    # 마스킹 대상(컨텍스트 기반)
     masked = text
     before = masked
 
-    if ACC_RE.search(masked):
+    # 계좌: 숫자 패턴 + 컨텍스트 키워드 동시 매칭
+    if ACC_RE.search(masked) and ACC_CTX.search(masked):
         masked = ACC_RE.sub("[REDACTED:ACCOUNT]", masked)
         reasons.append("bank_account")
 
-    if ROAD_RE.search(masked):
+    # 도로명: 주소 패턴 + 컨텍스트 키워드 동시 매칭
+    if ROAD_RE.search(masked) and ROAD_CTX.search(masked):
         masked = ROAD_RE.sub("[REDACTED:ROAD]", masked)
-        if "road_address" not in reasons:
-            reasons.append("road_address")
+        reasons.append("road_address")
 
     action = "allow_masked" if masked != before else "allow"
     return action, masked, reasons
@@ -144,7 +174,6 @@ def log_moderation_event(action: str, reasons: List[str], masked_text: str, sink
 # =========================
 # KoBERT 임베딩 → 정확도 점수
 # =========================
-
 class KobertScorer:
     """
     - backbone: KoBERT (동결)
@@ -248,16 +277,21 @@ class LexiconScorer:
             sniffer = csv.Sniffer()
             sample = f.read(2048)
             f.seek(0)
-            dialect = sniffer.sniff(sample) if sample else csv.excel
+            try:
+                dialect = sniffer.sniff(sample) if sample else csv.excel
+            except Exception:
+                dialect = csv.excel
             reader = csv.DictReader(f, dialect=dialect)
             cols = reader.fieldnames or []
-            wcol = word_col or next((c for c in cols if c.lower() in ("word","token","lemma","단어","용어")), cols[0])
-            scol = score_col or next((c for c in cols if c.lower() in ("score","value","val","점수","가중치")), cols[-1])
+            wcol = word_col or next((c for c in cols if c.lower() in ("word","token","lemma","단어","용어")), cols[0] if cols else "word")
+            scol = score_col or next((c for c in cols if c.lower() in ("score","value","val","점수","가중치")), cols[-1] if cols else "score")
             vals = []
             for row in reader:
-                w = str(row[wcol]).strip().lower()
+                if not row:
+                    continue
+                w = str(row.get(wcol, "")).strip().lower()
                 try:
-                    s = float(row[scol])
+                    s = float(row.get(scol, ""))
                 except Exception:
                     continue
                 if w:
