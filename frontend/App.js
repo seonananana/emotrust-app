@@ -15,6 +15,8 @@ import {
 const ENV_API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || '';      // 배포/고정 도메인
 const ENV_BOOTSTRAP = process.env.EXPO_PUBLIC_BOOTSTRAP_URL || '';    // 개발용: PC-LAN-IP:8000
 
+console.log("ENV API BASE =", process.env.EXPO_PUBLIC_API_BASE_URL);
+
 // fetch JSON with timeout
 async function fetchJSON(url, { method = 'GET', headers, body, timeout = 5000 } = {}) {
   const controller = new AbortController();
