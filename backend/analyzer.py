@@ -199,11 +199,13 @@ class KobertScorer:
             self.head.eval()
 
     def _load_models(self):
-        from transformers import AutoTokenizer, AutoModel
-        model_name = os.environ.get("KOBERT_MODEL", "skt/kobert-base-v1")
-        self.tok = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModel.from_pretrained(model_name).to(self.device)
-        self.model.eval()
+    from transformers import AutoTokenizer, AutoModel
+    model_name = os.environ.get("KOBERT_MODEL", "skt/kobert-base-v1")
+    self.tok = AutoTokenizer.from_pretrained(model_name)
+    self.model = AutoModel.from_pretrained(model_name).to(self.device)
+    for p in self.model.parameters():  # ← 명시적 동결
+        p.requires_grad = False
+    self.model.eval()
 
     @staticmethod
     def _mean_pool(last_hidden_state, attention_mask):
