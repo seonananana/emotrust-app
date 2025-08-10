@@ -22,10 +22,69 @@ class PreSignals:
     def __post_init__(self):
         self.s_acc = clamp01(self.s_acc)
         self.s_sinc = clamp01(self.s_sinc)
+# =========================
+# PII 필터 + 전처리
+# =========================
+import re, unicodedata
 
-# =========================
-# 전처리
-# =========================
+# --- PII 패턴들 ---
+RRN_RE   = re.compile(r"\b\d{6}[- ]?\d{7}\b")          # 주민등록번호 (단순 패턴)
+CARD_RE  = re.compile(r"\b(?:\d[ -]*?){13,19}\b")      # 신용카드 후보(룬 체크로 확정)
+ACC_RE   = re.compile(r"\b\d{10,14}\b")                # 은행계좌(단순 후보)
+ROAD_RE  = re.compile(                                 # 도로명 주소 간단 패턴
+    r"\b[가-힣0-9A-Za-z]+(?:로|길|대로)\s?\d+(?:-\d+)?(?:\s?\d+호|\s?\d+층)?\b"
+)
+
+def _luhn_ok(num_str: str) -> bool:
+    """신용카드 번호 룬(Luhn) 체크: 하이픈/공백 제거 후 검증"""
+    digits = [int(c) for c in re.sub(r"\D", "", num_str)]
+    if not (13 <= len(digits) <= 19):
+        return False
+    s = 0
+    parity = len(digits) % 2
+    for i, d in enumerate(digits):
+        if i % 2 == parity:
+            d = d * 2
+            if d > 9: d -= 9
+        s += d
+    return s % 10 == 0
+
+def moderate_text(text: str):
+    """
+    반환: (action, masked_text, reasons)
+    - action: "block" | "allow" | "allow_masked"
+    - reasons: 탐지 사유 코드 리스트
+    정책(기본):
+      * 주민등록번호: block
+      * 신용카드(룬 통과): block
+      * 계좌번호/도로명주소: 마스킹
+    """
+    reasons = []
+
+    # 하드 차단: 주민등록번호
+    if RRN_RE.search(text):
+        return "block", text, ["resident_id"]
+
+    # 하드 차단: 신용카드(룬 통과 시에만)
+    for m in CARD_RE.finditer(text):
+        if _luhn_ok(m.group()):
+            return "block", text, ["credit_card"]
+
+    # 마스킹 대상
+    masked = text
+    before = masked
+    if ACC_RE.search(masked):
+        masked = ACC_RE.sub("[REDACTED:ACCOUNT]", masked)
+        reasons.append("bank_account")
+    if ROAD_RE.search(masked):
+        masked = ROAD_RE.sub("[REDACTED:ROAD]", masked)
+        if "road_address" not in reasons:
+            reasons.append("road_address")
+
+    action = "allow_masked" if masked != before else "allow"
+    return action, masked, reasons
+
+# --- 기존 전처리 (URL/제로폭/공백/소문자/NFKC) ---
 _url_re = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 
 def preprocess_text(text: str) -> str:
@@ -38,6 +97,19 @@ def preprocess_text(text: str) -> str:
     t = re.sub(r"\s+", " ", t).strip().lower()
     return t
 
+def moderate_then_preprocess(raw_text: str):
+    """
+    1) PII 필터 (block 또는 마스킹)
+    2) 전처리 적용
+    반환: (action, preprocessed_text, reasons)
+    """
+    action, masked, reasons = moderate_text(raw_text)
+    if action == "block":
+        # 그대로 반려하고, 이후 파이프라인에 넘기지 않음
+        return action, "", reasons
+    clean = preprocess_text(masked)
+    return action, clean, reasons
+    
 # =========================
 # KoBERT 임베딩 → 정확도 점수
 # =========================
