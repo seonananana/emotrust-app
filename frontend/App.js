@@ -1,6 +1,7 @@
+// App.js
+// --- 번들 확인용(테스트 후 주석/삭제 가능) ---
 throw new Error("MARKER: This App.js is being bundled");
 
-// App.js
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
@@ -18,11 +19,8 @@ import {
 // ====== ENV (ngrok HTTPS만 허용) ======
 const RAW_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 if (__DEV__) {
-  // Metro/Expo 터미널과 웹 콘솔 양쪽에 찍힘
-  // 이 줄이 안 찍히면 지금 보는 번들이 이 파일이 아님
   console.log('ENV EXPO_PUBLIC_API_BASE_URL =', RAW_ENV_URL);
 }
-
 const normalizeUrl = (u) => (u || '').trim().replace(/\/+$/, '');
 
 // fetch JSON with timeout
@@ -46,11 +44,11 @@ export default function App() {
   const [result, setResult] = useState(null);
 
   const [backendURL, setBackendURL] = useState('');
-  const [backendSource, setBackendSource] = useState(''); // 'env' 기대
+  const [backendSource, setBackendSource] = useState(''); // 'env'만 사용
   const [bootstrapping, setBootstrapping] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  // ✅ 초기 Base URL: env(HTTPS)만 허용
+  // ✅ 초기 Base URL: env(HTTPS)만 허용 — 폴백 없음
   useEffect(() => {
     const init = async () => {
       const envUrl = normalizeUrl(RAW_ENV_URL);
