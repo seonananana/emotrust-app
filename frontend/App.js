@@ -1,4 +1,3 @@
-// App.js
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
@@ -13,13 +12,8 @@ import {
   Alert,
 } from 'react-native';
 
-// ====== ENV 강제 사용 (ngrok HTTPS만 허용) ======
-const RAW_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
-console.log("ENV EXPO_PUBLIC_API_BASE_URL =", RAW_ENV_URL); // 반드시 확인
-
-function normalizeUrl(u) {
-  return (u || '').trim().replace(/\/+$/, '');
-}
+const ENV_API_BASE = process.env.EXPO_PUBLIC_API_BASE_URL || '';      // 배포/고정 도메인
+const ENV_BOOTSTRAP = process.env.EXPO_PUBLIC_BOOTSTRAP_URL || '';    // 개발용: PC-LAN-IP:8000
 
 // fetch JSON with timeout
 async function fetchJSON(url, { method = 'GET', headers, body, timeout = 5000 } = {}) {
@@ -29,7 +23,7 @@ async function fetchJSON(url, { method = 'GET', headers, body, timeout = 5000 } 
     const res = await fetch(url, { method, headers, body, signal: controller.signal });
     const text = await res.text();
     let data = null;
-    try { data = JSON.parse(text); } catch { /* raw 유지 */ }
+    try { data = JSON.parse(text); } catch { /* 서버가 JSON이 아닐 수도 있어서 raw 유지 */ }
     return { ok: res.ok, status: res.status, data, raw: text };
   } finally {
     clearTimeout(id);
@@ -39,46 +33,52 @@ async function fetchJSON(url, { method = 'GET', headers, body, timeout = 5000 } 
 export default function App() {
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [result, setResult] = useState(null);
 
+  const [result, setResult] = useState(null);
   const [backendURL, setBackendURL] = useState('');
-  const [backendSource, setBackendSource] = useState(''); // 항상 'env' 기대
+  const [backendSource, setBackendSource] = useState(''); // 'env' | 'ngrok' | 'bootstrap'
   const [bootstrapping, setBootstrapping] = useState(true);
   const [loading, setLoading] = useState(false);
 
-  // ✅ 초기 Base URL 결정: env(HTTPS)만 허용
+  // ✅ 초기 Base URL 결정 로직
   useEffect(() => {
     const initBaseURL = async () => {
-      const envUrl = normalizeUrl(RAW_ENV_URL);
+      try {
+        // 1) 고정 도메인(배포) 우선
+        if (ENV_API_BASE) {
+          setBackendURL(ENV_API_BASE.replace(/\/+$/, ''));
+          setBackendSource('env');
+          return;
+        }
 
-      if (!envUrl) {
-        Alert.alert(
-          'API 주소 미설정',
-          'frontend/.env 파일에 EXPO_PUBLIC_API_BASE_URL=https://<ngrok>.ngrok-free.app 를 설정하세요.'
-        );
-        setBackendURL('');
-        setBackendSource('');
+        // 2) 개발용 부트스트랩이 없으면 안내
+        if (!ENV_BOOTSTRAP) {
+          setBackendURL(''); // 버튼 비활성화
+          setBackendSource('');
+          Alert.alert(
+            '설정 필요',
+            'EXPO_PUBLIC_BOOTSTRAP_URL이 설정되지 않았습니다.\n예: http://<PC-LAN-IP>:8000'
+          );
+          return;
+        }
+
+        const bootstrap = ENV_BOOTSTRAP.replace(/\/+$/, '');
+        // 2-1) 먼저 부트스트랩 주소를 기본으로 설정
+        setBackendURL(bootstrap);
+        setBackendSource('bootstrap');
+
+        // 2-2) 부트스트랩에서 /ngrok-url로 최신 퍼블릭 주소 조회
+        const { ok, data } = await fetchJSON(`${bootstrap}/ngrok-url`, { timeout: 3000 });
+        if (ok && data?.ngrok_url) {
+          setBackendURL(String(data.ngrok_url).replace(/\/+$/, ''));
+          setBackendSource(data?.source || 'ngrok'); // env|ngrok
+        } // 실패하면 bootstrap을 그대로 사용
+      } catch (e) {
+        // 어떤 에러가 나도 bootstrap 계속 사용
+      } finally {
         setBootstrapping(false);
-        return;
       }
-
-      if (!envUrl.startsWith('https://')) {
-        Alert.alert(
-          'HTTPS만 허용',
-          `EXPO_PUBLIC_API_BASE_URL가 HTTPS가 아닙니다.\n현재 값: ${envUrl}`
-        );
-        setBackendURL('');
-        setBackendSource('');
-        setBootstrapping(false);
-        return;
-      }
-
-      // ✅ 통과: env 사용
-      setBackendURL(envUrl);
-      setBackendSource('env');
-      setBootstrapping(false);
     };
-
     initBaseURL();
   }, []);
 
@@ -88,7 +88,7 @@ export default function App() {
 
   const handleSubmit = async () => {
     if (!backendURL) {
-      Alert.alert('백엔드 주소 없음', 'EXPO_PUBLIC_API_BASE_URL(HTTPS)을 설정하세요.');
+      Alert.alert('백엔드 주소 없음', '백엔드 URL을 아직 가져오지 못했습니다.');
       return;
     }
     if (!title.trim() || !content.trim()) {
@@ -118,6 +118,7 @@ export default function App() {
         return;
       }
 
+      // 안전을 위해 키 존재 확인
       if (data?.emotion_score == null || data?.truth_score == null) {
         setResult({
           error: '응답 형식이 올바르지 않습니다.',
