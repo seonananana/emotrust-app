@@ -1,7 +1,4 @@
 // App.js
-// --- 번들 확인용(테스트 후 주석/삭제 가능) ---
-throw new Error("MARKER: This App.js is being bundled");
-
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
