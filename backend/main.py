@@ -1,6 +1,7 @@
 # main.py
 # -*- coding: utf-8 -*-
 
+import os
 import json
 import logging
 import tempfile
@@ -12,6 +13,10 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel, Field
+
+from hashlib import sha256
+from pydantic import BaseModel
+from mint.mint import send_mint, wait_token_id
 
 # DB (SQLAlchemy - SQLite)
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Text
@@ -132,6 +137,12 @@ class PostOut(BaseModel):
     gate: float
     analysis_id: str
     created_at: str
+
+class AnalyzeMintReq(BaseModel):
+    text: str
+    comments: int = 0
+    to_address: str | None = None
+    denom_mode: str = "all"
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 유틸
@@ -308,3 +319,66 @@ async def list_posts(limit: int = 20, offset: int = 0):
                 }
             )
         return {"ok": True, "items": items, "count": len(items)}
+
+@app.post("/analyze-mint")
+async def analyze_and_mint(req: AnalyzeMintReq):
+    # 1) 점수 계산 & 게이트
+    gate = float(os.getenv("GATE_THRESHOLD", "0.70"))
+    res = pre_pipeline(
+        text=req.text,
+        denom_mode=req.denom_mode,
+        w_acc=0.5,           # 사전심사 가중치 (원하면 폼/환경변수로 받기)
+        w_sinc=0.5,
+        gate=gate,
+        # 파일 업로드는 여기선 없음
+    )
+
+    # 2) 게이트 미통과: 민팅 안 하고 점수만 반환
+    if not res["gate_pass"]:
+        return {
+            "ok": True,
+            "minted": False,
+            "scores": {
+                "S_acc": res["S_acc"],
+                "S_sinc": res["S_sinc"],
+                "S_pre": res["S_pre"],
+            },
+            "pii": {"action": res["pii_action"], "reasons": res["pii_reasons"]},
+        }
+
+    # 3) 체인에 기록할 데이터 준비(마스킹 본문 + 해시)
+    text_masked = res["clean_text"] or ""
+    MAX_LEN = int(os.getenv("TOKENURI_TEXT_MAX", "1000"))
+    text_for_chain = text_masked[:MAX_LEN]
+    content_hash = sha256(text_masked.encode("utf-8")).hexdigest()
+
+    meta = {
+        "name": "Empathy Post",
+        "description": "Masked text + scores recorded on-chain",
+        "text": text_for_chain,
+        "text_hash": f"sha256:{content_hash}",
+        "scores": {
+            "S_acc": round(res["S_acc"], 3),
+            "S_sinc": round(res["S_sinc"], 3),
+            "S_pre": round(res["S_pre"], 3),
+        },
+        "version": "v1",
+    }
+
+    # 4) 민팅 트랜잭션 전송 → tokenId 대기
+    to_addr = req.to_address or os.getenv("PUBLIC_ADDRESS")
+    try:
+        tx_hash = send_mint(to_addr, meta)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"mint send failed: {e}")
+
+    token_id, _ = wait_token_id(tx_hash)
+
+    return {
+        "ok": True,
+        "minted": True,
+        "tx_hash": tx_hash,
+        "explorer": f"https://sepolia.etherscan.io/tx/{tx_hash}",
+        "token_id": token_id,
+        "scores": meta["scores"],
+    }
