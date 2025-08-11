@@ -116,24 +116,24 @@ def _candidate_paths() -> list[Path]:
 
 @dataclass
 class LexiconScorer:
-    """
-    NRC-Korean 유사 포맷 CSV에서 (단어 → 단일 점수) 사전을 구성하고
-    입력 텍스트의 '진정성(0~1)'을 계산.
+    def __init__(
+        self,
+        path: str,
+        word_col: Optional[str] = None,
+        score_col: Optional[str] = None,
+    ):
+        self.vocab: Dict[str, float] = {}
+        self.min_v: float = 0.0
+        self.max_v: float = 1.0
 
-    기본 기대 헤더:
-      - Korean Word
-      - Emotion
-      - Emotion-Intensity-Score
+        # ⬇️ 추가: 인스턴스 속성으로 보관
+        self.path = os.path.abspath(path)
+        self.word_col = word_col or os.environ.get("EMO_LEX_WORD_COL") or "Korean Word"
+        self.score_col = score_col or os.environ.get("EMO_LEX_SCORE_COL") or "Emotion-Intensity-Score"
 
-    한 단어에 여러 감정 행이 있을 수 있으므로
-    단어별 점수는 '평균'으로 집계. (필요 시 max/median 등으로 확장 가능)
-    """
-    vocab: Dict[str, float]
-    path: Optional[str] = None
-    word_col: Optional[str] = None
-    score_col: Optional[str] = None
-    min_v: float = 0.0
-    max_v: float = 1.0
+        # 기존 로딩
+        self._load(self.path, self.word_col, self.score_col)
+
 
     # ---------- 로딩 ----------
     @classmethod
