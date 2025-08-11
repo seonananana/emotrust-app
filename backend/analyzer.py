@@ -35,8 +35,9 @@ class PreSignals:
         self.s_sinc = clamp01(self.s_sinc)
 
 # =========================
-# PII 필터 + 전처리
+# PII 필터 + 전처리 (보완판)
 # =========================
+
 # --- PII 패턴들 ---
 # 주민등록번호: 캡처 그룹 + 체크섬 검증으로 FP 감소
 RRN_RE   = re.compile(r"\b(\d{6})[- ]?(\d{7})\b")
@@ -44,8 +45,10 @@ RRN_RE   = re.compile(r"\b(\d{6})[- ]?(\d{7})\b")
 # 신용카드 후보(룬 체크로 확정)
 CARD_RE  = re.compile(r"\b(?:\d[ -]*?){13,19}\b")
 
-# 은행계좌(단순 후보) + 컨텍스트 키워드 동시 매칭 시에만 마스킹
-ACC_RE   = re.compile(r"\b\d{10,14}\b")
+# 계좌번호 후보: 하이픈/공백 허용으로 완화(후처리에서 길이 검증)
+# - 연속 숫자/공백/하이픈으로 10~20 '토큰'을 허용하고, 양끝이 숫자로 더 이어지지 않도록 가드
+ACC_RE   = re.compile(r"(?<!\d)(?:\d[ -]?){10,20}(?!\d)")
+# 컨텍스트 키워드(있을 때만 계좌로 간주)
 ACC_CTX  = re.compile(
     r"(계좌|입금|송금|이체|무통장|bank|account|농협|국민|신한|우리|하나|"
     r"카카오|토스|케이뱅크|ibk|기업|수협|새마을|우체국)", re.IGNORECASE
@@ -88,6 +91,30 @@ def _rrn_ok(six: str, seven: str) -> bool:
     except Exception:
         return False
 
+def _mask_accounts(text: str) -> tuple[str, bool]:
+    """
+    계좌 마스킹:
+      - 컨텍스트(ACC_CTX) 있을 때만 후보 탐색
+      - 후보에서 비숫자 제거 후 길이 10~14면 계좌로 간주해 치환
+    """
+    if not ACC_CTX.search(text):
+        return text, False
+
+    changed = False
+
+    def repl(m: re.Match) -> str:
+        nonlocal changed
+        raw = m.group()
+        digits = re.sub(r"\D", "", raw)
+        # 카드/주민번호/전화번호 등과 구분: 계좌는 보통 10~14자리
+        if 10 <= len(digits) <= 14:
+            changed = True
+            return "[REDACTED:ACCOUNT]"
+        return raw
+
+    new_text = ACC_RE.sub(repl, text)
+    return new_text, changed
+
 def moderate_text(text: str):
     """
     반환: (action, masked_text, reasons)
@@ -96,7 +123,7 @@ def moderate_text(text: str):
     정책(개선):
       * 주민등록번호: 체크섬 통과 시 block (형식만 맞으면 X)
       * 신용카드: Luhn 통과 시 block
-      * 계좌번호: 숫자패턴 + 컨텍스트 동시 매칭 시 mask
+      * 계좌번호: 숫자패턴(하이픈/공백 허용) + 컨텍스트 동시 매칭 시 mask(길이 10~14)
       * 도로명주소: 주소패턴 + 컨텍스트 동시 매칭 시 mask
     """
     reasons: List[str] = []
@@ -115,9 +142,9 @@ def moderate_text(text: str):
     masked = text
     before = masked
 
-    # 계좌: 숫자 패턴 + 컨텍스트 키워드 동시 매칭
-    if ACC_RE.search(masked) and ACC_CTX.search(masked):
-        masked = ACC_RE.sub("[REDACTED:ACCOUNT]", masked)
+    # 계좌: 숫자 후보 + 컨텍스트 + 길이 검증
+    masked, acc_changed = _mask_accounts(masked)
+    if acc_changed:
         reasons.append("bank_account")
 
     # 도로명: 주소 패턴 + 컨텍스트 키워드 동시 매칭
@@ -129,7 +156,11 @@ def moderate_text(text: str):
     return action, masked, reasons
 
 # --- 전처리 (URL/제로폭/공백/소문자/NFKC) ---
+
 _url_re = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
+
+# 제로폭/비가시 공백 문자 세트 확장: ZWSP/ZWJ/ZWNJ/WORD JOINER/BOM/NBSP 등
+ZW_RE = re.compile(r"[\u200B-\u200D\u2060\uFEFF\u00A0\u202F]")
 
 def preprocess_text(text: str) -> str:
     """URL/제로폭/공백 정리 + lower + NFKC 정규화"""
@@ -137,7 +168,7 @@ def preprocess_text(text: str) -> str:
         return ""
     t = unicodedata.normalize("NFKC", text)
     t = _url_re.sub(" ", t)
-    t = t.replace("\u200b", "")
+    t = ZW_RE.sub("", t)                 # 제로폭/비가시 공백 제거(기존 \u200b만 제거 → 확장)
     t = re.sub(r"\s+", " ", t).strip().lower()
     return t
 
@@ -170,7 +201,7 @@ def log_moderation_event(action: str, reasons: List[str], masked_text: str, sink
     except Exception:
         pass
     return event["event_id"]
-
+    
 # =========================
 # KoBERT 임베딩 → 정확도 점수
 # =========================
