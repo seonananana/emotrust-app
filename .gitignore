@@ -49,3 +49,5 @@ node_modules/
 *.apk
 *.keystore
 .env
+frontend/.env
+*.db
