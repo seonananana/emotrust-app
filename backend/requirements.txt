@@ -3,3 +3,5 @@ uvicorn
 openai
 python-dotenv
 python-multipart
+web3==6.17.0
+eth-account==0.10.0
