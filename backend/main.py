@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 # 분석 파이프라인 & 민팅 헬퍼
 from analyzer import pre_pipeline
 from mint.mint import send_mint, wait_token_id
+from dotenv import load_dotenv; load_dotenv()
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 로깅
