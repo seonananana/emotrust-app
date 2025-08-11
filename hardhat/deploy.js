@@ -1,22 +1,22 @@
 const fs = require("fs");
 const path = require("path");
-const hre = require("hardhat");
 
 async function main() {
-  const Empathy = await hre.ethers.getContractFactory("EmpathyNFT");
-  const c = await Empathy.deploy();
-  await c.deployed();
+  const EmpathyNFT = await ethers.deployContract("EmpathyNFT");
+  await EmpathyNFT.waitForDeployment();
+  const addr = await EmpathyNFT.getAddress();
+  console.log("EmpathyNFT deployed to:", addr);
 
-  console.log("EmpathyNFT deployed to:", c.address);
+  // 주소 저장 → backend에서 자동 사용
+  const out = path.join(__dirname, "..", "backend", "mint", "contract_address.txt");
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  fs.writeFileSync(out, addr, "utf8");
 
-  // ABI 추출 → backend로 복사
-  const artifact = await hre.artifacts.readArtifact("EmpathyNFT");
-  const abiPath = path.join(__dirname, "../backend/mint/abi/EmpathyNFT.abi.json");
-  fs.mkdirSync(path.dirname(abiPath), { recursive: true });
-  fs.writeFileSync(abiPath, JSON.stringify(artifact.abi, null, 2));
-
-  // 주소 저장(백엔드 .env 채울 때 사용)
-  fs.writeFileSync(path.join(__dirname, "./EmpathyNFT.address"), c.address);
+  // ABI 복사
+  const artifact = await artifacts.readArtifact("EmpathyNFT");
+  const abiOut = path.join(__dirname, "..", "backend", "mint", "abi", "EmpathyNFT.abi.json");
+  fs.mkdirSync(path.dirname(abiOut), { recursive: true });
+  fs.writeFileSync(abiOut, JSON.stringify(artifact.abi, null, 2));
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
