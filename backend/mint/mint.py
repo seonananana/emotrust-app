@@ -1,6 +1,7 @@
 import os, json, base64
 from web3 import Web3
 
+# ── 환경변수 (backend/.env)
 RPC_URL      = os.getenv("RPC_URL")
 CHAIN_ID     = int(os.getenv("CHAIN_ID", "11155111"))  # Sepolia
 PRIVATE_KEY  = os.getenv("PRIVATE_KEY")
@@ -15,11 +16,13 @@ with open(ABI_PATH, "r", encoding="utf-8") as f:
 contract = w3.eth.contract(address=CONTRACT, abi=abi)
 
 def _data_uri(meta: dict) -> str:
+    """메타데이터 dict → data:application/json;base64, ... 로 인라인화(비용 0, 외부저장소X)"""
     j = json.dumps(meta, ensure_ascii=False, separators=(",", ":"))
     b64 = base64.b64encode(j.encode()).decode()
     return f"data:application/json;base64,{b64}"
 
 def send_mint(to_addr: str, meta: dict) -> str:
+    """민팅 트랜잭션 전송. EIP-1559(tx type:2)로 서명/브로드캐스트 → tx_hash 반환."""
     to = Web3.to_checksum_address(to_addr)
     uri = _data_uri(meta)
     fn = getattr(contract.functions, MINT_FN_NAME)(to, uri)
@@ -29,7 +32,7 @@ def send_mint(to_addr: str, meta: dict) -> str:
         "from": PUBLIC_ADDR,
         "nonce": nonce,
         "chainId": CHAIN_ID,
-        "type": 2,  # EIP-1559
+        "type": 2,
         "maxFeePerGas": w3.to_wei("2", "gwei"),
         "maxPriorityFeePerGas": w3.to_wei("1", "gwei"),
     })
@@ -40,8 +43,8 @@ def send_mint(to_addr: str, meta: dict) -> str:
     return tx_hash.hex()
 
 def wait_token_id(tx_hash_hex: str, timeout: int = 180):
+    """채굴 대기 후 영수증 로그의 Transfer 이벤트에서 tokenId 추출."""
     rcpt = w3.eth.wait_for_transaction_receipt(tx_hash_hex, timeout=timeout)
-    # Transfer 이벤트에서 tokenId 추출
     try:
         events = contract.events.Transfer().process_receipt(rcpt)
         if events:
