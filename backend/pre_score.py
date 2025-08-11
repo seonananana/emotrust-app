@@ -148,7 +148,7 @@ class LexiconScorer:
         if not p.exists():
             raise FileNotFoundError(f"Lexicon file not found: {p}")
 
-        with open(p, "r", encoding="utf-8-sig", newline="") as f:
+        with open(p, "r", encoding="utf-8-sig") as f:
             sample = f.read(4096)
             f.seek(0)
             dialect = _sniff_dialect(sample)
