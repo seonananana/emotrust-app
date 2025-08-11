@@ -40,44 +40,30 @@ export default function App() {
   const [result, setResult] = useState(null);
 
   const [backendURL, setBackendURL] = useState('');
-  const [backendSource, setBackendSource] = useState(''); // 'env'
-  const [bootstrapping, setBootstrapping] = useState(true);
   const [loading, setLoading] = useState(false);
 
   // 파일 업로드(PDF) 상태
   const [pdfs, setPdfs] = useState([]); // [{ uri, name, mimeType, size }...]
 
+  // 저장 상태
+  const [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState(null);
+
   // ✅ 초기 Base URL: env(HTTPS)만 허용 — 폴백 없음
   useEffect(() => {
-    if (__DEV__) {
-      console.log('ENV EXPO_PUBLIC_API_BASE_URL =', RAW_ENV_URL);
+    const envUrl = normalizeUrl(RAW_ENV_URL);
+    if (!envUrl) {
+      Alert.alert(
+        'API 주소 미설정',
+        'frontend/.env 파일에\nEXPO_PUBLIC_API_BASE_URL=https://<ngrok>.ngrok-free.app\n를 설정하세요.'
+      );
+      return;
     }
-    const init = async () => {
-      const envUrl = normalizeUrl(RAW_ENV_URL);
-
-      if (!envUrl) {
-        Alert.alert(
-          'API 주소 미설정',
-          'frontend/.env 파일에\nEXPO_PUBLIC_API_BASE_URL=https://<ngrok>.ngrok-free.app\n를 설정하세요.'
-        );
-        setBackendURL('');
-        setBackendSource('');
-        setBootstrapping(false);
-        return;
-      }
-      if (!envUrl.startsWith('https://')) {
-        Alert.alert('HTTPS만 허용', `현재 값: ${envUrl}`);
-        setBackendURL('');
-        setBackendSource('');
-        setBootstrapping(false);
-        return;
-      }
-
-      setBackendURL(envUrl);
-      setBackendSource('env');
-      setBootstrapping(false);
-    };
-    init();
+    if (!envUrl.startsWith('https://')) {
+      Alert.alert('HTTPS만 허용', `현재 값: ${envUrl}`);
+      return;
+    }
+    setBackendURL(envUrl);
   }, []);
 
   const canSubmit = useMemo(() => {
@@ -88,18 +74,16 @@ export default function App() {
     try {
       const res = await DocumentPicker.getDocumentAsync({
         type: 'application/pdf',
-        multiple: true,                  // 여러 파일 선택
+        multiple: true,
         copyToCacheDirectory: true,
       });
       if (res.canceled) return;
 
-      // SDK별로 assets 또는 output 배열 형태가 다를 수 있음 → 통일 처리
       const assets = res.assets || [];
       const next = [...pdfs];
 
       assets.forEach((a) => {
         if (!a?.uri) return;
-        // 중복 방지(같은 uri면 스킵)
         if (next.find(x => x.uri === a.uri)) return;
         next.push({
           uri: a.uri,
@@ -115,11 +99,55 @@ export default function App() {
     }
   };
 
-  const removePDF = (idx) => {
-    setPdfs((prev) => prev.filter((_, i) => i !== idx));
-  };
-
+  const removePDF = (idx) => setPdfs((prev) => prev.filter((_, i) => i !== idx));
   const clearPDFs = () => setPdfs([]);
+
+  // ✅ 게이트 통과 시 저장 API
+  const savePost = async ({ analysis, meta }) => {
+    setSaving(true);
+    setSavedId(null);
+
+    const payload = {
+      title,
+      content,
+      scores: {
+        S_pre: analysis.S_pre,
+        S_sinc: analysis.S_sinc,
+        S_fact: analysis.S_fact ?? null,
+        coverage: analysis.coverage,
+        total: analysis.total,
+        matched: analysis.matched,
+        masked: analysis.masked,
+        gate_pass: analysis.gate_pass,
+      },
+      weights: { w_acc: 0.5, w_sinc: 0.5 },
+      denom_mode: meta?.denom_mode || 'all',
+      gate: meta?.gate ?? 0.70,
+      files: pdfs.map(f => ({ name: f.name, size: f.size })),
+      meta: {
+        ...meta,
+        title_len: title.length,
+        content_len: content.length,
+      },
+      analysis_id: meta?.analysis_id || null,
+    };
+
+    const { ok, status, data, raw } = await fetchJSON(`${backendURL}/posts`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      timeout: 15000,
+    });
+
+    setSaving(false);
+    if (!ok) {
+      Alert.alert('저장 실패', `HTTP ${status}\n${(data?.message || raw || '').slice(0, 200)}`);
+      return;
+    }
+    const id = data?.post_id || data?.id;
+    setSavedId(id || null);
+    Alert.alert('등록 완료', id ? `글이 저장되었어요. #${id}` : '글이 저장되었어요.');
+  };
 
   const handleSubmit = async () => {
     if (!backendURL) {
@@ -133,17 +161,16 @@ export default function App() {
 
     setLoading(true);
     setResult(null);
+    setSavedId(null);
 
     const formData = new FormData();
     formData.append('title', title.trim());
     formData.append('content', content.trim());
-    // 선택: 가중치/모드/게이트 기본값은 서버 기본과 동일 (원하면 UI로 노출 가능)
-    formData.append('denom_mode', 'all'); // or 'matched'
+    formData.append('denom_mode', 'all');
     formData.append('w_acc', String(0.5));
     formData.append('w_sinc', String(0.5));
     formData.append('gate', String(0.70));
 
-    // PDF 첨부 (여러 개는 같은 키 'pdfs'로 반복 append)
     for (const f of pdfs) {
       formData.append('pdfs', {
         uri: f.uri,
@@ -167,7 +194,6 @@ export default function App() {
         return;
       }
 
-      // analyzer 기반 main.py의 응답 스키마에 맞게 처리
       if (!data?.ok || !data?.result) {
         setResult({
           error: '응답 형식이 올바르지 않습니다.',
@@ -176,7 +202,15 @@ export default function App() {
         return;
       }
 
-      setResult(data); // { ok, meta, result:{...} } 형태 그대로 저장
+      setResult(data);
+
+      // ✅ 게이트 통과 시 자동 저장
+      const a = data.result;
+      if (a?.gate_pass === true) {
+        await savePost({ analysis: a, meta: data.meta });
+      } else {
+        Alert.alert('게이트 미통과', '최종 점수(S_pre)가 0.70 미만이라 저장하지 않았습니다.');
+      }
     } catch (error) {
       setResult({ error: `요청 실패: ${String(error)}` });
     } finally {
@@ -208,19 +242,7 @@ export default function App() {
           <Text selectable style={styles.debugText}>
             URL: {backendURL || '(없음)'}
           </Text>
-          <Text style={styles.debugText}>Source: {backendSource || '-'}</Text>
-          <Text style={[styles.debugText, { marginTop: 4 }]}>
-            ENV: {normalizeUrl(RAW_ENV_URL) || '(미설정)'}
-          </Text>
-          {bootstrapping && (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <ActivityIndicator />
-              <Text style={styles.debugText}>주소 확인 중…</Text>
-            </View>
-          )}
-          <Text style={[styles.debugText, { marginTop: 6 }]}>
-            📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})
-          </Text>
+          <Text style={[styles.debugText, { marginTop: 6 }]}>📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})</Text>
         </View>
 
         <Text style={styles.label}>제목</Text>
@@ -268,11 +290,11 @@ export default function App() {
           <Button
             title={loading ? '분석 중…' : '분석 요청'}
             onPress={handleSubmit}
-            disabled={!canSubmit || bootstrapping}
+            disabled={!canSubmit}
           />
         </View>
 
-        {/* 결과 표시 (analyzer 기반) */}
+        {/* 결과 표시 */}
         {result?.result && (
           <View style={styles.resultBox}>
             <Text style={styles.resultTitle}>📊 분석 결과</Text>
@@ -285,17 +307,21 @@ export default function App() {
             <Text>토큰 수: {result.result.total} / 매칭: {result.result.matched}</Text>
             <Text>PII 처리: {result.result.masked ? '마스킹됨' : '그대로'}</Text>
             <Text>게이트 통과: {result.result.gate_pass ? '✅' : '❌'}</Text>
-            {!!(result?.meta) && (
-              <Text style={{ marginTop: 6, opacity: 0.7 }}>
-                제목 길이: {result.meta.title?.length || 0} / 본문 길이: {result.meta.chars}
-              </Text>
+            {saving && (
+              <View style={{ flexDirection:'row', alignItems:'center', gap:8, marginTop:6 }}>
+                <ActivityIndicator />
+                <Text>저장 중…</Text>
+              </View>
+            )}
+            {savedId && (
+              <Text style={{ marginTop:6 }}>📌 등록 완료 ID: {savedId}</Text>
             )}
           </View>
         )}
 
         {/* 에러 박스 */}
         {result?.error && (
-          <View style={[styles.resultBox, { backgroundColor: '#ffe6e6', borderColor: '#ffcccc' }]}>
+          <View style={[styles.resultBox, { backgroundColor: '#ffe6e6', borderColor: '#ffcccc' }]}>          
             <Text style={{ color: '#b00020', fontWeight: '600' }}>{result.error}</Text>
             {result.raw_response && (
               <Text style={{ marginTop: 8, color: '#333' }}>{result.raw_response}</Text>
