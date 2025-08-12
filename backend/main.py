@@ -21,6 +21,10 @@ from analyzer import pre_pipeline
 from mint.mint import send_mint, wait_token_id
 from dotenv import load_dotenv; load_dotenv()
 
+BASE = Path(__file__).resolve().parent  # backend/
+load_dotenv(BASE / ".env")                                  # backend/.env
+load_dotenv(BASE.parent / "hardhat" / ".env", override=False)  # hardhat/.env도 fallback
+
 # ────────────────────────────────────────────────────────────────────────────────
 # 로깅
 # ────────────────────────────────────────────────────────────────────────────────
