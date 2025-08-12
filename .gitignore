@@ -1,5 +1,9 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
+backend/.env
+frontend/.env
+hardhat/.env
+
 # dependencies
 node_modules/
 
