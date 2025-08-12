@@ -298,10 +298,23 @@ export default function App() {
           <View style={styles.resultBox}>
             <Text style={styles.resultTitle}>📊 분석 결과</Text>
             <Text>최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}</Text>
-            <Text>진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}</Text>
-            <Text>
-              팩트(S_fact): {result.result.S_fact == null ? '검증 불가' : (result.result.S_fact * 100).toFixed(1)}
-            </Text>
+-            <Text>진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}</Text>
+-            <Text>
+-              팩트(S_fact): {result.result.S_fact == null ? '검증 불가' : (result.result.S_fact * 100).toFixed(1)}
+-            </Text>
++            <Text>
++              최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}점 / 100
++              {'  '}(정규화 {(result.result.S_pre).toFixed(3)})
++            </Text>
++            <Text>
++              진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}점 / 100
++              {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
++            </Text>
++            <Text>
++              팩트(S_fact): {result.result.S_fact == null
++                ? '검증 불가'
++                : `${(result.result.S_fact * 100).toFixed(1)}점 / 100 (정규화 ${result.result.S_fact.toFixed(3)})`}
++            </Text>
             <Text>커버리지: {(result.result.coverage * 100).toFixed(1)}%</Text>
             <Text>토큰 수: {result.result.total} / 매칭: {result.result.matched}</Text>
             <Text>PII 처리: {result.result.masked ? '마스킹됨' : '그대로'}</Text>
