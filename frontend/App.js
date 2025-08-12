@@ -1,3 +1,4 @@
+// App.js
 import React, { useState, useEffect, useMemo } from 'react';
 import {
   View,
@@ -47,6 +48,8 @@ export default function App() {
   // 저장 상태
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState(null);
+
+  const [gate, setGate] = useState(0.70); // [ADDED] 게이트 값을 상태로 관리 (정규화 0~1)
 
   // ✅ 초기 Base URL: env(HTTPS)만 허용 — 폴백 없음
   useEffect(() => {
@@ -121,7 +124,7 @@ export default function App() {
       },
       weights: { w_acc: 0.5, w_sinc: 0.5 },
       denom_mode: meta?.denom_mode || 'all',
-      gate: meta?.gate ?? 0.70,
+      gate: meta?.gate ?? gate, // [CHANGED] 저장 시에도 현재 gate를 동기화
       files: pdfs.map(f => ({ name: f.name, size: f.size })),
       meta: {
         ...meta,
@@ -168,7 +171,7 @@ export default function App() {
     formData.append('denom_mode', 'all');
     formData.append('w_acc', String(0.5));
     formData.append('w_sinc', String(0.5));
-    formData.append('gate', String(0.70));
+    formData.append('gate', String(gate)); // [CHANGED] 고정 0.70 → 상태 gate 사용
 
     for (const f of pdfs) {
       formData.append('pdfs', {
@@ -208,7 +211,11 @@ export default function App() {
       if (a?.gate_pass === true) {
         await savePost({ analysis: a, meta: data.meta });
       } else {
-        Alert.alert('게이트 미통과', '최종 점수(S_pre)가 0.70 미만이라 저장하지 않았습니다.');
+        Alert.alert(
+          '게이트 미통과',
+          // [CHANGED] 실제 사용된 게이트 값(정규화) 표기
+          `최종 점수(S_pre)가 설정 임계값(${(a?.gate_used ?? gate).toFixed(2)}) 미만이라 저장하지 않았습니다.`
+        );
       }
     } catch (error) {
       setResult({ error: `요청 실패: ${String(error)}` });
@@ -241,7 +248,18 @@ export default function App() {
           <Text selectable style={styles.debugText}>
             URL: {backendURL || '(없음)'}
           </Text>
-          <Text style={[styles.debugText, { marginTop: 6 }]}>📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})</Text>
+          <Text style={[styles.debugText, { marginTop: 6 }]}>
+            📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})
+          </Text>
+          <View style={{ marginTop: 8, flexDirection: 'row', gap: 8 }}>
+            {/* [ADDED] 개발용 게이트 토글 */}
+            <Button title="Gate 0.70" onPress={() => setGate(0.70)} />
+            <Button title="0.50" onPress={() => setGate(0.50)} />
+            <Button title="0.12" onPress={() => setGate(0.12)} />
+          </View>
+          <Text style={{ color: '#475569', marginTop: 4 }}>
+            현재 Gate(정규화): {gate}
+          </Text>
         </View>
 
         <Text style={styles.label}>제목</Text>
@@ -297,28 +315,37 @@ export default function App() {
         {result?.result && (
           <View style={styles.resultBox}>
             <Text style={styles.resultTitle}>📊 분석 결과</Text>
-            <Text>최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}</Text>
--            <Text>진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}</Text>
--            <Text>
--              팩트(S_fact): {result.result.S_fact == null ? '검증 불가' : (result.result.S_fact * 100).toFixed(1)}
--            </Text>
-+            <Text>
-+              최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}점 / 100
-+              {'  '}(정규화 {(result.result.S_pre).toFixed(3)})
-+            </Text>
-+            <Text>
-+              진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}점 / 100
-+              {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
-+            </Text>
-+            <Text>
-+              팩트(S_fact): {result.result.S_fact == null
-+                ? '검증 불가'
-+                : `${(result.result.S_fact * 100).toFixed(1)}점 / 100 (정규화 ${result.result.S_fact.toFixed(3)})`}
-+            </Text>
+            {/* [REMOVED] 옛 표시 방식: 단순 퍼센트만 보여주던 라인 */}
+            {/* <Text>최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}</Text> */}
+
+            {/* [CHANGED] 보기용(0~100) + 정규화(0~1) 동시 표기 */}
+            <Text>
+              최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}점 / 100
+              {'  '}(정규화 {(result.result.S_pre).toFixed(3)})
+            </Text>
+            <Text>
+              진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}점 / 100
+              {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
+            </Text>
+            <Text>
+              팩트(S_fact): {result.result.S_fact == null
+                ? '검증 불가'
+                : `${(result.result.S_fact * 100).toFixed(1)}점 / 100 (정규화 ${result.result.S_fact.toFixed(3)})`}
+            </Text>
+
+            {/* [ADDED] 백엔드가 내려주는 실제 사용 게이트 값(정규화/원점수) 표기 */}
+            {'gate_used' in result.result && (
+              <Text>
+                게이트: {(result.result.gate_used * 100).toFixed(1)}점 / 100
+                {'  '}(정규화 {result.result.gate_used.toFixed(3)})
+              </Text>
+            )}
+
             <Text>커버리지: {(result.result.coverage * 100).toFixed(1)}%</Text>
             <Text>토큰 수: {result.result.total} / 매칭: {result.result.matched}</Text>
             <Text>PII 처리: {result.result.masked ? '마스킹됨' : '그대로'}</Text>
             <Text>게이트 통과: {result.result.gate_pass ? '✅' : '❌'}</Text>
+
             {saving && (
               <View style={{ flexDirection:'row', alignItems:'center', gap:8, marginTop:6 }}>
                 <ActivityIndicator />
@@ -333,7 +360,7 @@ export default function App() {
 
         {/* 에러 박스 */}
         {result?.error && (
-          <View style={[styles.resultBox, { backgroundColor: '#ffe6e6', borderColor: '#ffcccc' }]}>          
+          <View style={[styles.resultBox, { backgroundColor: '#ffe6e6', borderColor: '#ffcccc' }]}>
             <Text style={{ color: '#b00020', fontWeight: '600' }}>{result.error}</Text>
             {result.raw_response && (
               <Text style={{ marginTop: 8, color: '#333' }}>{result.raw_response}</Text>
