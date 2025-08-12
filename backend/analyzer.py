@@ -153,21 +153,22 @@ def pre_pipeline(
         evidence = {}
 
     # ---- [5] 결합/게이트 ----
-    gate_norm = normalize_gate(gate)
+gate_norm = normalize_gate(gate)
 
-    if S_fact is None:
-        # PDF 없음/검증 불가 → S_sinc만으로 계산 (가중치 자동 정규화)
-        if isinstance(min_sinc_if_no_pdf, (int, float)):
-             S_sinc = max(S_sinc, 0.40)  # 바닥값 0.4 보장
-            S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf))
-        S_pre = (w_sinc * S_sinc) / max(1e-9, w_sinc)
-        S_pre_ext = S_pre
-    else:
-        denom = max(1e-9, w_acc + w_sinc)
-        S_pre = (w_acc * clamp01(S_fact) + w_sinc * S_sinc) / denom
-        S_pre_ext = S_pre
+if S_fact is None:
+    # PDF 없음/검증 불가 → S_sinc만으로 계산
+    if isinstance(min_sinc_if_no_pdf, (int, float)):
+        # 바닥값 0.40 보장 + 사용자 최솟값 반영
+        S_sinc = max(S_sinc, 0.40)
+        S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf))
+    S_pre = (w_sinc * S_sinc) / max(1e-9, w_sinc)
+    S_pre_ext = S_pre
+else:
+    denom = max(1e-9, w_acc + w_sinc)
+    S_pre = (w_acc * clamp01(S_fact) + w_sinc * S_sinc) / denom
+    S_pre_ext = S_pre
 
-    gate_pass = bool(S_pre >= gate_norm)
+gate_pass = bool(S_pre >= gate_norm)
 
     # 하위호환 필드 주석:
     # - S_acc : 과거 '정확도' 키를 기대하는 소비자(프론트/DB)를 위해 유지. 의미는 S_fact 또는 0.0.
