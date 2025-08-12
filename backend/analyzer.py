@@ -158,6 +158,7 @@ def pre_pipeline(
     if S_fact is None:
         # PDF 없음/검증 불가 → S_sinc만으로 계산 (가중치 자동 정규화)
         if isinstance(min_sinc_if_no_pdf, (int, float)):
+             S_sinc = max(S_sinc, 0.40)  # 바닥값 0.4 보장
             S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf))
         S_pre = (w_sinc * S_sinc) / max(1e-9, w_sinc)
         S_pre_ext = S_pre
