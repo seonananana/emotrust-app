@@ -1,9 +1,11 @@
-// app.config.js
-import 'dotenv/config';
+// frontend/app.config.js
+require('dotenv').config(); // .env 로드
 
-export default ({ config }) => ({
+module.exports = ({ config }) => ({
   ...config,
   extra: {
-    API_BASE_URL: process.env.EXPO_PUBLIC_API_BASE_URL,
+    ...config.extra,
+    EXPO_PUBLIC_API_BASE_URL:
+      process.env.EXPO_PUBLIC_API_BASE_URL ?? 'http://localhost:8000',
   },
 });
