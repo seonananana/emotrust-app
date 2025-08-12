@@ -2,6 +2,7 @@ import re            # 이메일/전화번호 등 패턴 탐지
 import unicodedata   # NFKC 등 텍스트 정규화
 import hashlib       # PII 해시(익명화)
 import uuid 
+from typing import List
 
 # =========================
 # PII 필터 + 전처리 (보완판)
