@@ -300,6 +300,7 @@ async def analyze(
 
 @app.post("/analyze-mint")
 async def analyze_and_mint(req: AnalyzeMintReq):
+    from analyzer import pre_pipeline
     # 1) 분석 + 게이트
     gate = float(os.getenv("GATE_THRESHOLD", "0.70"))
     res = _call_pre_pipeline_safe(
