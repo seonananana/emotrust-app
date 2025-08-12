@@ -8,7 +8,6 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 from hashlib import sha256
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -16,14 +15,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-# 분석 파이프라인 & 민팅 헬퍼
-from analyzer import pre_pipeline
-from mint.mint import send_mint, wait_token_id
-from dotenv import load_dotenv; load_dotenv()
+from dotenv import load_dotenv
 
+# ────────────────────────────────────────────────────────────────────────────────
+# ENV 로드 (backend/.env → hardhat/.env 순서로)
+# ────────────────────────────────────────────────────────────────────────────────
 BASE = Path(__file__).resolve().parent  # backend/
-load_dotenv(BASE / ".env")                                  # backend/.env
-load_dotenv(BASE.parent / "hardhat" / ".env", override=False)  # hardhat/.env도 fallback
+load_dotenv(BASE / ".env")
+load_dotenv(BASE.parent / "hardhat" / ".env", override=False)
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 로깅
@@ -44,7 +43,6 @@ POSTS_LOG_PATH = os.getenv("POSTS_LOG_PATH", "./data/posts.jsonl")
 def _jsonl_append(obj: Dict[str, Any]) -> int:
     os.makedirs(os.path.dirname(POSTS_LOG_PATH), exist_ok=True)
     if "id" not in obj:
-        # 밀리초 타임스탬프 기반 ID
         obj["id"] = int(datetime.utcnow().timestamp() * 1000)
     if "created_at" not in obj:
         obj["created_at"] = datetime.utcnow().isoformat() + "Z"
@@ -123,7 +121,7 @@ app.add_middleware(
 )
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 스키마 (필수 필드만, 기본값으로 유연하게)
+# 스키마
 # ────────────────────────────────────────────────────────────────────────────────
 class PreResult(BaseModel):
     pii_action: str
@@ -138,7 +136,7 @@ class PreResult(BaseModel):
     coverage: float = Field(0.0, ge=0.0, le=1.0)
     clean_text: str = ""
     masked: bool = False
-    # 확장 필드(있으면 채우고, 없으면 기본값)
+    # 확장 필드
     S_pre_ext: float = Field(0.0, ge=0.0, le=1.0)
     S_fact: Optional[float] = None
     need_evidence: bool = False
@@ -153,7 +151,7 @@ class AnalyzeResponse(BaseModel):
 class ScoresIn(BaseModel):
     S_pre: float
     S_sinc: float
-    S_acc: Optional[float] = None   # 이름 혼용 대비(S_fact/S_acc)
+    S_acc: Optional[float] = None
     S_fact: Optional[float] = None
     coverage: float
     total: int
@@ -243,12 +241,13 @@ def _call_pre_pipeline_safe(
 ) -> Dict[str, Any]:
     """
     pre_pipeline 시그니처가 버전에 따라 pdf_paths를 안 받을 수도 있어서
-    두 방식 모두 시도.
+    두 방식 모두 시도. (지연 import로 부팅 안정화)
     """
+    from analyzer import pre_pipeline as _pre  # ← 여기서 import (lazy)
     try:
-        return pre_pipeline(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate, pdf_paths=pdf_paths)
+        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate, pdf_paths=pdf_paths)
     except TypeError:
-        return pre_pipeline(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate)
+        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate)
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 라우트
@@ -300,7 +299,6 @@ async def analyze(
 
 @app.post("/analyze-mint")
 async def analyze_and_mint(req: AnalyzeMintReq):
-    from analyzer import pre_pipeline
     # 1) 분석 + 게이트
     gate = float(os.getenv("GATE_THRESHOLD", "0.70"))
     res = _call_pre_pipeline_safe(
@@ -332,9 +330,10 @@ async def analyze_and_mint(req: AnalyzeMintReq):
         "version": "v1",
     }
 
-    # 4) 민팅(서명/전송) → tokenId
+    # 4) 민팅(서명/전송) → tokenId  (지연 import)
     to_addr = req.to_address or os.getenv("PUBLIC_ADDRESS")
     try:
+        from mint.mint import send_mint, wait_token_id  # ← 여기서 import (lazy)
         tx_hash = send_mint(to_addr, meta)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"mint send failed: {e}")
