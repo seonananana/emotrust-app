@@ -276,22 +276,21 @@ export default function App() {
           />
 
           <Text style={styles.label}>내용</Text>
-          <TextInput
-            style={[styles.input, { height: 120 }]}
-            value={content}
-            onChangeText={setContent}
-            placeholder="내용을 입력하세요"
-            multiline
-          />
-          </View>
+<TextInput
+  style={[styles.input, { height: 120 }]}
+  value={content}
+  onChangeText={setContent}
+  placeholder="내용을 입력하세요"
+  multiline
+/>
 
-          <View style={{ marginTop: 16 }}>
-            <Button
-              title={loading ? '분석 중…' : '분석 요청'}
-              onPress={handleSubmit}
-              disabled={!canSubmit}
-            />
-          </View>
+<View style={{ marginTop: 16 }}>
+  <Button
+    title={loading ? '분석 중…' : '분석 요청'}
+    onPress={handleSubmit}
+    disabled={!canSubmit}
+  />
+</View>
 
           {/* 결과 표시 */}
           {result?.result && (
