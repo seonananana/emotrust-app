@@ -71,21 +71,17 @@ def pre_pipeline(
     w_sinc: float = 0.5,
     gate: float = 0.70,
     *,
-    pdf_paths: Optional[List[str]] = None,   # PDF 없으면 검증 불가 플래그만 반환
-    # --- 옵션 (운영 중 튜닝을 쉽게 하려면 ENV로 매핑해도 됨) ---
+    pdf_paths: Optional[List[str]] = None,                 # 경로 입력
+    pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,   # 바이트 입력 (파일명, 데이터)
+    # --- 옵션 ---
     enable_coverage_boost: bool = True,
-     coverage_boost_k: float = 0.7,          # ← 업 (기존 0.5였다면 0.7로)
-    coverage_boost_max: float = 0.15,       # ← 업 (기존 0.10였다면 0.15로)
-    min_sinc_if_no_pdf: Optional[float] = 0.40,  # ← 업 (0.4 바닥 보장)
+    coverage_boost_k: float = 0.7,
+    coverage_boost_max: float = 0.15,
+    min_sinc_if_no_pdf: Optional[float] = 0.40,
 ) -> Dict[str, Any]:
     """
     [1] PII 필터 → [2] 전처리 → [3] 진정성(CSV) → [4] PDF 팩트체크 → [5] 결합/게이트
     반환: 기본 지표 + (있으면) PDF 정확성 결과
-
-    스케일:
-      - 모든 내부 스코어는 0~1.
-      - 응답에 보기용 0~100 원점수(S_pre_raw, gate_used_raw) 동시 제공.
-      - gate 인자는 0~1 또는 0~100 어느 쪽이든 허용(자동 정규화).
     """
     # ---- [1] PII 필터 + 전처리 ----
     action, clean_candidate, reasons = moderate_then_preprocess(text)
@@ -123,7 +119,6 @@ def pre_pipeline(
             boost = min(coverage_boost_max, coverage_boost_k * float(cov))
             S_sinc = clamp01(S_sinc + boost)
         except Exception:
-            # 실패 시 원값 유지
             S_sinc = clamp01(S_sinc)
 
     # ---- [4] PDF 기반 정확성 (B안) ----
@@ -132,15 +127,11 @@ def pre_pipeline(
     claims: List[str] = []
     evidence: Dict[str, Any] = {}
     try:
-        fc = score_with_pdf(clean_text=clean, pdf_paths=pdf_paths)
-        # 다양한 키명 호환
+        # ✅ 경로/바이트 모두 전달 (acc_score가 지원)
+        fc = score_with_pdf(clean_text=clean, pdf_paths=pdf_paths, pdf_blobs=pdf_blobs)
         s_acc_raw = None
         if isinstance(fc, dict):
-            s_acc_raw = fc.get("S_fact", None)
-            if s_acc_raw is None:
-                s_acc_raw = fc.get("S_acc", None)
-            if s_acc_raw is None:
-                s_acc_raw = fc.get("S_acc_pdf", None)
+            s_acc_raw = fc.get("S_fact", None) or fc.get("S_acc", None) or fc.get("S_acc_pdf", None)
             need_evidence = bool(fc.get("need_evidence", False))
             claims = list(fc.get("claims") or [])
             evidence = dict(fc.get("evidence") or {})
@@ -155,12 +146,10 @@ def pre_pipeline(
     gate_norm = normalize_gate(gate)
 
     if S_fact is None:
-        # PDF 없음/검증 불가 → S_sinc만으로 계산
+        # PDF 없음/검증 불가 → S_sinc만으로 계산 (바닥값 보장)
         if isinstance(min_sinc_if_no_pdf, (int, float)):
-            # 바닥값 0.40 보장 + 사용자 최솟값 반영
-            S_sinc = max(S_sinc, 0.40)
-            S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf))
-        S_pre = (w_sinc * S_sinc) / max(1e-9, w_sinc)
+            S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf), 0.40)
+        S_pre = S_sinc  # w_sinc / (w_sinc) 간략화
         S_pre_ext = S_pre
     else:
         denom = max(1e-9, w_acc + w_sinc)
@@ -169,12 +158,10 @@ def pre_pipeline(
 
     gate_pass = bool(S_pre >= gate_norm)
 
-        # --- ensure coverage / clean_text exist (표준화) ---
-    coverage = float(locals().get('coverage', locals().get('cov', 0.0)))
-    clean_text = locals().get('clean_text', locals().get('clean', ''))
-    
-    # 하위호환 필드 주석:
-    # - S_acc : 과거 '정확도' 키를 기대하는 소비자(프론트/DB)를 위해 유지. 의미는 S_fact 또는 0.0.
+    # 표준화된 메타 필드
+    coverage = float(cov)
+    clean_text = clean
+
     return {
         "pii_action": action, "pii_reasons": reasons,
         "S_acc": clamp01(0.0 if S_fact is None else S_fact),  # 하위호환 이름
@@ -182,18 +169,18 @@ def pre_pipeline(
         "S_pre": clamp01(S_pre),
         "S_pre_ext": clamp01(S_pre_ext),
 
-        # 보기용 원점수(0~100) 및 실제 사용한 게이트(둘 다 제공)
+        # 보기용 원점수(0~100) 및 실제 사용한 게이트
         "S_pre_raw": round(clamp01(S_pre) * 100.0, 1),
         "gate_used": gate_norm,
         "gate_used_raw": round(gate_norm * 100.0, 1),
 
         "gate_pass": gate_pass,
 
-        # 토큰/커버리지
+        # 토큰/커버리지(lexicon 기준)
         "tokens": int(total),
         "matched": int(matched),
         "total": int(total),
-        "coverage": float(coverage),
+        "coverage": coverage,
 
         "clean_text": clean_text,
         "masked": bool(masked),
@@ -204,7 +191,7 @@ def pre_pipeline(
         "claims": claims,
         "evidence": evidence,
     }
-    
+
 
 # =============================
 # 하위호환용 API (가능하면 pre_pipeline 직접 호출)
@@ -220,5 +207,4 @@ async def build_pre_signals(content: str, denom_mode: str = "all") -> PreSignals
         return PreSignals(s_acc=0.0, s_sinc=0.0)
 
     s_acc_proxy = 0.0  # 중립값(정책에 따라 0.0 또는 0.5 가능)
-    s_sinc, _, _, _ = get_lexicon().sincerity(clean, mode=denom_mode)
-    return PreSignals(s_acc=s_acc_proxy, s_sinc=s_sinc)
+    S_sinc, _, _, _ = get_lexicon().sincerity(clean, mode=de_
