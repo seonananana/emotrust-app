@@ -31,7 +31,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger("emotrust-backend")
 
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 DB_PATH = os.getenv("DB_PATH", "emotrust.db")
 USE_DB = os.getenv("USE_DB", "true").lower() == "true"   # false면 파일(JSONL) 저장으로 대체
 
@@ -48,7 +48,6 @@ def _build_token_meta_from_post(
     """
     NFT 메타데이터 생성: 마스킹 텍스트가 있으면 사용, 없으면 본문 일부/해시만 기록.
     """
-    from hashlib import sha256
     text_for_chain = (masked_text or content or "")[:TOKENURI_TEXT_MAX]
     return {
         "name": "Empathy Post",
@@ -64,7 +63,7 @@ def _build_token_meta_from_post(
     }
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 선택: 파일(JSONL) 저장 유틸 (USE_DB=false일 때 사용)
+# 파일(JSONL) 저장 유틸 (USE_DB=false일 때 사용)
 # ────────────────────────────────────────────────────────────────────────────────
 POSTS_LOG_PATH = os.getenv("POSTS_LOG_PATH", "./data/posts.jsonl")
 
@@ -102,6 +101,32 @@ def _jsonl_get(post_id: int) -> Optional[Dict[str, Any]]:
 def _jsonl_list(limit: int, offset: int) -> List[Dict[str, Any]]:
     items = list(reversed(_jsonl_read_all()))
     return items[offset: offset + limit]
+
+def _jsonl_update_post(post_id: int, patch: Dict[str, Any]) -> None:
+    """
+    posts.jsonl 전체를 읽어 해당 id를 찾아 병합 업데이트 후 파일을 덮어쓴다.
+    patch는 dict로 들어오며, 중첩 dict(meta 등)는 얕은 병합.
+    """
+    rows = _jsonl_read_all()
+    updated = False
+    for i, row in enumerate(rows):
+        if int(row.get("id", -1)) == int(post_id):
+            for k, v in patch.items():
+                if isinstance(v, dict) and isinstance(row.get(k), dict):
+                    row[k] = {**row[k], **v}
+                else:
+                    row[k] = v
+            rows[i] = row
+            updated = True
+            break
+    if not updated:
+        return
+    os.makedirs(os.path.dirname(POSTS_LOG_PATH), exist_ok=True)
+    tmp = POSTS_LOG_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in rows:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, POSTS_LOG_PATH)
 
 # ────────────────────────────────────────────────────────────────────────────────
 # DB (SQLAlchemy - SQLite)  ※ USE_DB=true일 때만 활성
@@ -413,14 +438,22 @@ async def analyze_and_mint(req: AnalyzeMintReq):
         "version": "v1",
     }
 
-    # 4) 민팅(서명/전송) → tokenId  (지연 import)
+    # 4) 민팅(서명/전송) → tokenId  (PUBLIC_ADDRESS 없으면 PRIVATE_KEY로 자동 파생)
     to_addr = req.to_address or os.getenv("PUBLIC_ADDRESS")
+    if not to_addr:
+        pk = os.getenv("PRIVATE_KEY")
+        if pk:
+            from web3 import Web3
+            to_addr = Web3().eth.account.from_key(pk).address
+    if not to_addr:
+        raise HTTPException(status_code=500, detail="PUBLIC_ADDRESS not set")
+
     try:
-        from mint.mint import send_mint, wait_token_id  # ← lazy import
+        from mint.mint import send_mint, wait_token_id  # lazy import
         tx_hash = send_mint(to_addr, meta)
+        token_id, _ = wait_token_id(tx_hash)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"mint send failed: {e}")
-    token_id, _ = wait_token_id(tx_hash)
 
     return {
         "ok": True,
@@ -486,10 +519,6 @@ async def create_post(p: PostIn):
     explorer = None
     mint_error = None
 
-    # AUTO_MINT 기본값: true (환경변수로 끌 수 있음)
-    AUTO_MINT = os.getenv("AUTO_MINT", "true").lower() in ("true", "1", "yes")
-    TOKENURI_TEXT_MAX = int(os.getenv("TOKENURI_TEXT_MAX", "1000"))
-
     if AUTO_MINT:
         try:
             # analyzer 결과의 마스킹 텍스트가 meta에 들어왔다면 사용
@@ -497,28 +526,29 @@ async def create_post(p: PostIn):
             if isinstance(meta_cur, dict):
                 masked_text = meta_cur.get("masked_text") or meta_cur.get("clean_text")
 
-            # 토큰 메타 구성(인라인 빌더)
-            from hashlib import sha256
-            text_for_chain = (masked_text or saved_content or "")[:TOKENURI_TEXT_MAX]
-            meta_token = {
-                "name": "Empathy Post",
-                "description": "Masked text + scores recorded on-chain",
-                "text": text_for_chain,
-                "text_hash": f"sha256:{sha256((saved_content or '').encode('utf-8')).hexdigest()}",
-                "scores": {
-                    "S_acc": round(float(scores.get("S_acc") or scores.get("S_fact") or 0.0), 3),
-                    "S_sinc": round(float(scores.get("S_sinc") or 0.0), 3),
-                    "S_pre": round(float(scores.get("S_pre") or 0.0), 3),
+            # 토큰 메타 구성
+            meta_token = _build_token_meta_from_post(
+                saved_title, saved_content,
+                {
+                    "S_acc": scores.get("S_acc") or scores.get("S_fact"),
+                    "S_sinc": scores.get("S_sinc"),
+                    "S_pre": scores.get("S_pre"),
                 },
-                "version": "v1",
-            }
+                masked_text=masked_text,
+            )
 
+            # 수령 주소: PUBLIC_ADDRESS > PRIVATE_KEY 파생
             to_addr = os.getenv("PUBLIC_ADDRESS")
+            if not to_addr:
+                pk = os.getenv("PRIVATE_KEY")
+                if pk:
+                    from web3 import Web3
+                    to_addr = Web3().eth.account.from_key(pk).address
             if not to_addr:
                 raise RuntimeError("PUBLIC_ADDRESS not set")
 
-            # 실제 민팅 (lazy import로 보강)
-            from mint.mint import send_mint, wait_token_id
+            # 실제 민팅
+            from mint.mint import send_mint, wait_token_id  # lazy import
             tx_hash = send_mint(to_addr, meta_token)
             token_id, _ = wait_token_id(tx_hash)
             minted = True
@@ -526,14 +556,13 @@ async def create_post(p: PostIn):
 
             # 3) 민팅 결과를 저장 데이터에 반영
             if not USE_DB:
-                # JSONL은 append-업데이트 방식: 같은 id로 최신 상태를 다시 기록
-                updated = dict(obj)
-                updated["id"] = post_id
-                new_meta = dict(meta_cur or {})
-                new_meta["minted"] = True
-                new_meta["mint"] = {"token_id": token_id, "tx_hash": tx_hash, "explorer": explorer}
-                updated["meta"] = new_meta
-                _jsonl_append(updated)
+                _jsonl_update_post(int(post_id), {
+                    "meta": {
+                        **(meta_cur or {}),
+                        "minted": True,
+                        "mint": {"token_id": token_id, "tx_hash": tx_hash, "explorer": explorer},
+                    }
+                })
             else:
                 from sqlalchemy.orm import Session  # type: ignore
                 with SessionLocal() as db:  # type: ignore
@@ -557,7 +586,7 @@ async def create_post(p: PostIn):
         "explorer": explorer,
         "mint_error": mint_error,
     }
-    
+
 @app.get("/posts/{post_id}", response_model=PostOut)
 async def get_post(post_id: int):
     if not USE_DB:
@@ -615,6 +644,7 @@ async def list_posts(limit: int = 20, offset: int = 0):
                     "S_acc": sc.get("S_acc") or sc.get("S_fact"),
                     "gate": obj.get("gate"),
                     "gate_pass": sc.get("gate_pass"),
+                    # minted 여부/정보는 상세(meta)에서 확인 가능. 필요하다면 여기도 풀어줄 수 있음.
                 }
             )
         return {"ok": True, "items": items, "count": len(items)}
