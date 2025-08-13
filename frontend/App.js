@@ -337,7 +337,7 @@ export default function App() {
 
           <Text style={styles.label}>내용</Text>
           <TextInput
-            style={[styles.input, { height: 120 ]}}
+            style={[styles.input, { height: 120 }]}
             value={content}
             onChangeText={setContent}
             placeholder="내용을 입력하세요"
