@@ -152,7 +152,7 @@ def pre_pipeline(
         claims = []
         evidence = {}
 
-       # ---- [5] 결합/게이트 ----
+    # ---- [5] 결합/게이트 ----
     gate_norm = normalize_gate(gate)
 
     if S_fact is None:
@@ -201,6 +201,7 @@ def pre_pipeline(
         "claims": claims,
         "evidence": evidence,
     }
+    
 
 # =============================
 # 하위호환용 API (가능하면 pre_pipeline 직접 호출)
