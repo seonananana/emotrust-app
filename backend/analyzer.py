@@ -172,36 +172,35 @@ gate_pass = bool(S_pre >= gate_norm)
 
     # 하위호환 필드 주석:
     # - S_acc : 과거 '정확도' 키를 기대하는 소비자(프론트/DB)를 위해 유지. 의미는 S_fact 또는 0.0.
-    return {
-        "pii_action": action, "pii_reasons": reasons,
+return {
+    "pii_action": action, "pii_reasons": reasons,
+    "S_acc": clamp01(0.0 if S_fact is None else S_fact),  # 하위호환 이름
+    "S_sinc": clamp01(S_sinc),
+    "S_pre": clamp01(S_pre),
+    "S_pre_ext": clamp01(S_pre_ext),
 
-        "S_acc": clamp01(0.0 if S_fact is None else S_fact),  # 하위호환 이름
-        "S_sinc": clamp01(S_sinc),
-        "S_pre": clamp01(S_pre),
-        "S_pre_ext": clamp01(S_pre_ext),
+    # 보기용 원점수(0~100) 및 실제 사용한 게이트(둘 다 제공)
+    "S_pre_raw": round(clamp01(S_pre) * 100.0, 1),
+    "gate_used": gate_norm,
+    "gate_used_raw": round(gate_norm * 100.0, 1),
 
-        # 보기용 원점수(0~100) 및 실제 사용한 게이트(둘 다 제공)
-        "S_pre_raw": round(clamp01(S_pre) * 100.0, 1),
-        "gate_used": gate_norm,
-        "gate_used_raw": round(gate_norm * 100.0, 1),
+    "gate_pass": gate_pass,
 
-        "gate_pass": gate_pass,
+    # 토큰/커버리지
+    "tokens": int(total),        
+    "matched": int(matched),
+    "total": int(total),
+    "coverage": float(cov),
 
-        # 토큰/커버리지
-        "tokens": int(total),
-        "matched": int(matched),
-        "total": int(total),
-        "coverage": float(cov),
+    "clean_text": clean,
+    "masked": bool(masked),
 
-        "clean_text": clean,
-        "masked": bool(masked),
-
-        # B안 결과
-        "S_fact": None if S_fact is None else float(S_fact),
-        "need_evidence": bool(need_evidence),
-        "claims": claims,
-        "evidence": evidence,
-    }
+    # B안 결과
+    "S_fact": None if S_fact is None else float(S_fact),
+    "need_evidence": bool(need_evidence),
+    "claims": claims,
+    "evidence": evidence,
+}
 
 
 # =============================
