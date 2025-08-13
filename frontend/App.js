@@ -54,7 +54,7 @@ export default function App() {
   const [mintInfo, setMintInfo] = useState(null); // { minted, token_id, tx_hash, explorer, mint_error }
 
   // 게이트(정규화 0~1)
-  const [gate, setGate] = useState(0.70);
+  const [gate, setGate] = useState(0.30);
 
   // ✅ 초기 Base URL: env(HTTPS)만 허용 — 폴백 없음
   useEffect(() => {
