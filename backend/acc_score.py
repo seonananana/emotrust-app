@@ -1,164 +1,116 @@
-from __future__ import annotations
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from transformers import BertTokenizer
+from kobert_transformers import get_tokenizer, get_kobert_model
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from tqdm import tqdm
 
-import os
-import io
-import re
-import math
-import unicodedata
-from dataclasses import dataclass
-from typing import Optional, Dict, Tuple, List, Any
+# KoBERT 회귀 모델
+class KoBERTRegressor(nn.Module):
+    def __init__(self):
+        super(KoBERTRegressor, self).__init__()
+        self.bert = get_kobert_model()
+        self.regressor = nn.Sequential(
+            nn.Linear(768, 128),
+            nn.ReLU(),
+            nn.Linear(128, 1)
+        )
 
-# 선택 의존성
-try:
-    import fitz  # PyMuPDF
-    _HAS_PYMUPDF = True
-except:
-    fitz = None
-    _HAS_PYMUPDF = False
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        pooled = outputs.pooler_output
+        return self.regressor(pooled).squeeze(1)  # (batch,) 형태
 
-try:
-    from pypdf import PdfReader
-    _HAS_PYPDF = True
-except:
-    PdfReader = None
-    _HAS_PYPDF = False
+# 커스텀 Dataset
+class KoBERTDataset(Dataset):
+    def __init__(self, df, tokenizer, max_len=64):
+        self.texts = df["kor_sentence"].tolist()
+        self.labels = df["score"].tolist()
+        self.tokenizer = tokenizer
+        self.max_len = max_len
 
-try:
-    import pytesseract
-    from PIL import Image
-    _HAS_TESS = True
-except:
-    pytesseract = None
-    Image = None
-    _HAS_TESS = False
+    def __len__(self):
+        return len(self.texts)
 
-try:
-    from sentence_transformers import SentenceTransformer
-    _HAS_SBERT = True
-except:
-    SentenceTransformer = None
-    _HAS_SBERT = False
+    def __getitem__(self, idx):
+        encoded = self.tokenizer(
+            self.texts[idx],
+            padding="max_length",
+            truncation=True,
+            max_length=self.max_len,
+            return_tensors="pt"
+        )
+        return {
+            "input_ids": encoded["input_ids"].squeeze(0),
+            "attention_mask": encoded["attention_mask"].squeeze(0),
+            "label": torch.tensor(self.labels[idx], dtype=torch.float)
+        }
 
-# 텍스트 유틸
-_WS_RE = re.compile(r'\s+')
-_SENT_SPLIT_RE = re.compile(r'(?<=[\.!?])\s+|[\n\r]+|(?<=[가-힣\w\)])\s*[\-–·]\s+')
+# 라벨 → 점수 매핑
+label2score = {"positive": 1.0, "neutral": 0.5, "negative": 0.0}
 
-def _normalize_spaces(s: str) -> str:
-    return _WS_RE.sub(" ", unicodedata.normalize("NFKC", s)).strip()
+def load_data(csv_path):
+    df = pd.read_csv(csv_path)
+    df = df.dropna()
+    df = df[df["labels"].isin(label2score)]
+    df["score"] = df["labels"].map(label2score)
+    return df
 
-def _split_sentences(s: str) -> List[str]:
-    return [p.strip() for p in _SENT_SPLIT_RE.split(_normalize_spaces(s)) if len(p.strip()) > 1]
+def train():
+    df = load_data("finance_data.csv")
+    train_df, val_df = train_test_split(df, test_size=0.1, random_state=42)
 
-def _chunk_text(s: str, chunk_chars: int = 600, overlap: int = 100) -> List[str]:
-    s = _normalize_spaces(s)
-    step = max(1, chunk_chars - overlap)
-    return [s[i:i+chunk_chars] for i in range(0, len(s), step)]
+    tokenizer = get_tokenizer()
+    train_dataset = KoBERTDataset(train_df, tokenizer)
+    val_dataset = KoBERTDataset(val_df, tokenizer)
 
-# OCR 포함 PDF 텍스트 추출
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16)
 
-def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional[bytes] = None) -> List[str]:
-    texts = []
-    if _HAS_PYMUPDF:
-        try:
-            doc = fitz.open(stream=pdf_bytes, filetype="pdf") if pdf_bytes else fitz.open(path)
-            for page in doc:
-                t = page.get_text("text").strip()
-                if len(t) < 30 and _HAS_TESS:
-                    pix = page.get_pixmap(dpi=200)
-                    img = Image.open(io.BytesIO(pix.tobytes("png")))
-                    t_ocr = pytesseract.image_to_string(img, lang="kor+eng")
-                    t = t_ocr if len(t_ocr) > len(t) else t
-                texts.append(_normalize_spaces(t))
-            doc.close()
-            return texts
-        except Exception as e:
-            print(f"OCR 추출 실패: {e}")
+    model = KoBERTRegressor().cuda()
+    criterion = nn.MSELoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=2e-5)
 
-    if _HAS_PYPDF:
-        try:
-            reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else PdfReader(path)
-            for page in reader.pages:
-                texts.append(_normalize_spaces(page.extract_text() or ""))
-            return texts
-        except Exception as e:
-            print(f"pypdf 실패: {e}")
+    for epoch in range(3):
+        model.train()
+        total_loss = 0
+        for batch in tqdm(train_loader):
+            input_ids = batch["input_ids"].cuda()
+            attention_mask = batch["attention_mask"].cuda()
+            labels = batch["label"].cuda()
 
-    return texts
+            outputs = model(input_ids, attention_mask)
+            loss = criterion(outputs, labels)
 
-# 간단 임베딩 (SBERT or BoW)
-class SimpleEmbedder:
-    def __init__(self, model_name="intfloat/multilingual-e5-base"):
-        self.uses_sbert = _HAS_SBERT
-        self.backend = SentenceTransformer(model_name) if _HAS_SBERT else None
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
 
-    def encode(self, texts):
-        if self.backend:
-            return self.backend.encode(texts, convert_to_tensor=False, normalize_embeddings=True)
-        return [self._bow_vec(t) for t in texts]
+        print(f"Epoch {epoch+1}, Train Loss: {total_loss/len(train_loader):.4f}")
 
-    def cosine(self, a, b):
-        if self.backend:
-            return float((a * b).sum())
-        return sum(a.get(k, 0.0) * b.get(k, 0.0) for k in a if k in b)
+    torch.save(model.state_dict(), "kobert_regressor.pth")
+    print("✅ Model saved!")
 
-    def _bow_vec(self, s):
-        toks = re.findall(r"[가-힣a-zA-Z0-9]+", s.lower())
-        vec = {t: toks.count(t) for t in set(toks)}
-        norm = math.sqrt(sum(v*v for v in vec.values()))
-        return {k: v/norm for k, v in vec.items()} if norm else vec
+# 예측
+@torch.no_grad()
+def predict_score(sentence):
+    tokenizer = get_tokenizer()
+    model = KoBERTRegressor().cuda()
+    model.load_state_dict(torch.load("kobert_regressor.pth"))
+    model.eval()
 
-@dataclass
-class EvidenceChunk:
-    text: str
-    page: int
-    sim: float
-    source: str
+    encoded = tokenizer(sentence, padding="max_length", truncation=True, max_length=64, return_tensors="pt")
+    input_ids = encoded["input_ids"].cuda()
+    attention_mask = encoded["attention_mask"].cuda()
 
-class PDFIndex:
-    def __init__(self, embedder=None, chunk_chars=600, overlap=100):
-        self.embedder = embedder or SimpleEmbedder()
-        self.chunk_chars = chunk_chars
-        self.overlap = overlap
-        self.chunks = []
-        self.embeds = []
+    score = model(input_ids, attention_mask).item()
+    return round(score, 3)
 
-    def load(self, pdf_blobs: List[Tuple[str, bytes]]):
-        for name, blob in pdf_blobs:
-            texts = _extract_page_texts_from_pdf(pdf_bytes=blob)
-            for page_num, text in enumerate(texts, 1):
-                for chunk in _chunk_text(text, self.chunk_chars, self.overlap):
-                    self.chunks.append(EvidenceChunk(chunk, page_num, 0.0, name))
-        self.embeds = self.embedder.encode([c.text for c in self.chunks])
-
-    def search(self, query, k=5):
-        q_embed = self.embedder.encode([query])[0]
-        scored = [(self.embedder.cosine(q_embed, e), c) for e, c in zip(self.embeds, self.chunks)]
-        return sorted(scored, reverse=True)[:k]
-
-def extract_claims(text, max_claims=3):
-    sents = [s for s in _split_sentences(text) if len(s) > 7]
-    return sents[:max(1, max_claims)] if sents else [text.strip()]
-
-def score_with_pdf(clean_text, pdf_blobs):
-    idx = PDFIndex()
-    idx.load(pdf_blobs)
-
-    if not idx.chunks:
-        return {"S_fact": None, "need_evidence": True, "claims": [], "evidence": {}, "meta": {}}
-
-    claims = extract_claims(clean_text)
-    per_scores, evid_map = [], {}
-    for c in claims:
-        top = idx.search(c)
-        best = top[0][0] if top else 0.0
-        per_scores.append(best if best > 0 else 0.01)
-        evid_map[c] = [{"text": ec.text, "sim": s, "page": ec.page, "source": ec.source} for s, ec in top]
-
-    s_fact = sum(per_scores)/len(per_scores)
-    return {
-        "S_fact": round(s_fact, 4),
-        "need_evidence": s_fact < 0.3,
-        "claims": claims,
-        "evidence": evid_map,
-        "meta": {"chunks": len(idx.chunks)}
-    }
+if __name__ == "__main__":
+    train()
+    # test
+    test_sent = "이 회사는 2025년에 높은 수익을 기록했다."
+    print("S_acc =", predict_score(test_sent))
