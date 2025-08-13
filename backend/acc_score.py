@@ -168,16 +168,30 @@ class EvidenceChunk:
 def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional[bytes] = None) -> List[str]:
     texts: List[str] = []
 
+    # ✅ 디버깅 로그: 어떤 PDF가 들어왔는지 출력
+    if pdf_bytes:
+        print(f"✅ PDF 바이트 길이: {len(pdf_bytes)}")
+    if path:
+        print(f"✅ PDF 경로: {path}")
+
+    # PyMuPDF 우선 사용
     if _HAS_PYMUPDF:
         try:
             if pdf_bytes is not None:
-                doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                try:
+                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                except Exception as e:
+                    print(f"❌ PyMuPDF로 PDF 열기 실패: {e}")
+                    return []
             else:
                 assert path is not None, "path or pdf_bytes required"
                 doc = fitz.open(path)
+
             for page in doc:
                 t = page.get_text("text") or ""
                 t = _normalize_spaces(t)
+
+                # OCR 처리 조건
                 if len(t) < 30 and _HAS_TESS:
                     try:
                         pix = page.get_pixmap(dpi=200)
@@ -188,14 +202,19 @@ def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional
                         t2 = _normalize_spaces(t_ocr)
                         if len(t2) > len(t):
                             t = t2
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"❌ OCR 실패: {e}")
+
                 texts.append(t)
+
             doc.close()
             return texts
-        except Exception:
-            pass
 
+        except Exception as e:
+            print(f"❌ PyMuPDF 전체 실패: {e}")
+            pass  # fallback to pypdf
+
+    # fallback: pypdf
     if _HAS_PYPDF:
         try:
             if pdf_bytes is not None:
@@ -207,9 +226,11 @@ def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional
                 t = p.extract_text() or ""
                 texts.append(_normalize_spaces(t))
             return texts
-        except Exception:
+        except Exception as e:
+            print(f"❌ pypdf 실패: {e}")
             pass
 
+    print("❌ PDF 텍스트 추출 실패. 빈 리스트 반환.")
     return texts
 
 # =========================
