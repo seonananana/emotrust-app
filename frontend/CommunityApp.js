@@ -41,9 +41,9 @@ function PostCard({ p, onOpen }) {
     <TouchableOpacity style={s.card} onPress={onOpen} activeOpacity={0.85}>
       <Text style={s.title}>#{p.id} · {p.title || '(제목 없음)'}</Text>
 
-      {/* ✅ 내용(본문) 추가 */}
+      {/* ✅ 본문 내용 일부 미리보기 */}
       {p.content && (
-        <Text style={s.content} numberOfLines={2}>
+        <Text numberOfLines={2} style={s.preview}>
           {p.content}
         </Text>
       )}
