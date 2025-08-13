@@ -730,7 +730,7 @@ async def get_post(post_id: int):
  
      # DB 모드
 from sqlalchemy.orm import Session  # type: ignore
-     with SessionLocal() as db:  # type: ignore
+with SessionLocal() as db:  # type: ignore
          obj = db.get(Post, post_id)  # type: ignore
          if not obj:
              raise HTTPException(status_code=404, detail="NOT_FOUND")
