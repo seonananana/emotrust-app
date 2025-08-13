@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import CommunityApp from './CommunityApp';
+import { SafeAreaView } from 'react-native';
 
 // ====== ENV (ngrok HTTPS만 허용) ======
 const RAW_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
@@ -278,20 +279,22 @@ export default function App() {
       style={{ flex: 1 }}
     >
       {/* 상단 탭 */}
-      <View style={styles.topTabs}>
-        <TouchableOpacity
-          onPress={() => setTab('analyze')}
-          style={[styles.tabBtn, tab === 'analyze' && styles.tabBtnActive]}
-        >
-          <Text style={[styles.tabTxt, tab === 'analyze' && styles.tabTxtActive]}>분석/등록</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          onPress={() => setTab('community')}
-          style={[styles.tabBtn, tab === 'community' && styles.tabBtnActive]}
-        >
-          <Text style={[styles.tabTxt, tab === 'community' && styles.tabTxtActive]}>커뮤니티</Text>
-        </TouchableOpacity>
-      </View>
+<SafeAreaView>
+  <View style={[styles.topTabs, { marginTop: 10 }]}>
+    <TouchableOpacity
+      onPress={() => setTab('analyze')}
+      style={[styles.tabBtn, tab === 'analyze' && styles.tabBtnActive]}
+    >
+      <Text style={[styles.tabTxt, tab === 'analyze' && styles.tabTxtActive]}>분석/등록</Text>
+    </TouchableOpacity>
+    <TouchableOpacity
+      onPress={() => setTab('community')}
+      style={[styles.tabBtn, tab === 'community' && styles.tabBtnActive]}
+    >
+      <Text style={[styles.tabTxt, tab === 'community' && styles.tabTxtActive]}>커뮤니티</Text>
+    </TouchableOpacity>
+  </View>
+</SafeAreaView>
 
       {tab === 'community' ? (
         // 커뮤니티 화면
