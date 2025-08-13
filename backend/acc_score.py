@@ -1,12 +1,14 @@
+
 # acc_score.py
-# B안: PDF 기반 팩트체크 (Claim → Retrieval → NLI) + 증거 없으면 업로드 유도
-# - 선택 의존성(있으면 품질↑): pymupdf, pypdf, pytesseract(+tesseract-ocr-kor),
-#   sentence-transformers, transformers
-# - 의존성 없을 때는 BoW 유사도로 폴백
+# PDF 기반 정확성(팩트) 스코어러
+# - 주장 추출 → PDF 인덱싱 → 검색 → 유사도 평균으로 S_fact 산출
+# - PyMuPDF(있으면 우선), pypdf(폴백), pytesseract(텍스트 부족 시 OCR), sentence-transformers(임베딩)가 있으면 사용
+# - 없으면 BoW 코사인으로 폴백
+from __future__ import annotations
 
 import os
-import re
 import io
+import re
 import math
 import unicodedata
 from dataclasses import dataclass
@@ -20,26 +22,66 @@ def clamp01(x) -> float:
         x = float(x)
     except Exception:
         return 0.0
-    if x < 0.0:
-        return 0.0
-    if x > 1.0:
-        return 1.0
-    return x
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+_WS_RE = re.compile(r'\s+')
 
 def _normalize_spaces(s: str) -> str:
-    s = unicodedata.normalize("NFKC", s or "")
-    s = s.replace("\u200b", "")
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    return _WS_RE.sub(" ", s).strip()
+
+_SENT_SPLIT_RE = re.compile(r'(?<=[\.\?\!])\s+|[\n\r]+|(?<=[가-힣\w\)])\s*[·\-–—]\s+')
+
+def _split_sentences(s: str) -> List[str]:
+    s = _normalize_spaces(s)
+    if not s:
+        return []
+    parts = [p.strip() for p in _SENT_SPLIT_RE.split(s) if p and len(p.strip()) > 1]
+    return parts
+
+def _dedupe_keep_order(xs: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in xs:
+        k = x.strip()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+def _tokenize_kor_en(s: str) -> List[str]:
+    # 간단 토크나이저: 한글/영문/숫자 기준
+    s = _normalize_spaces(s.lower())
+    # 한글/영문/숫자 외에는 공백으로
+    s = re.sub(r"[^0-9a-z가-힣]+", " ", s)
+    toks = [t for t in s.split() if t]
+    return toks
+
+def _chunk_text(s: str, chunk_chars: int = 600, overlap: int = 100) -> List[str]:
+    """문자열을 길이 chunk_chars로 겹치게(overlap) 잘라 반환"""
+    s = _normalize_spaces(s)
+    if not s:
+        return []
+    chunk_chars = max(1, int(chunk_chars))
+    overlap = max(0, int(overlap))
+    step = max(1, chunk_chars - overlap)
+    return [s[i:i + chunk_chars] for i in range(0, len(s), step)]
 
 # =========================
-# 선택 의존성 체크
+# 선택 의존성
 # =========================
 _HAS_PYMUPDF = False
 _HAS_PYPDF = False
 _HAS_TESS = False
-_HAS_SENT_EMB = False
-_HAS_NLI = False
+_HAS_SBERT = False
+
+fitz = None
+PdfReader = None
+SentenceTransformer = None
+pytesseract = None
+Image = None
 
 try:
     import fitz  # PyMuPDF
@@ -62,80 +104,37 @@ except Exception:
 
 try:
     from sentence_transformers import SentenceTransformer
-    _HAS_SENT_EMB = True
-except Exception:
-    pass
-
-try:
-    from transformers import AutoTokenizer as _NLI_Tok, AutoModelForSequenceClassification as _NLI_Model
-    _HAS_NLI = True
+    _HAS_SBERT = True
 except Exception:
     pass
 
 # =========================
-# 주장(Claim) 추출
-# =========================
-def _split_sentences_ko(text: str) -> List[str]:
-    """간이 문장 분리 (정교 분리는 kss 등으로 교체 가능)"""
-    if not text:
-        return []
-    # 마침표/물음표/느낌표 + 줄바꿈
-    s = re.sub(r"([\.!?])", r"\1\n", text)
-    parts = [p.strip() for p in s.splitlines() if p.strip()]
-    return parts
-
-# 존댓말 문체까지 포함 (합니다/드립니다/됩니다 등)
-_CLAIM_ENDING_RE = re.compile(
-    r"(이다|였다|한다|한다\.|합니다|드립니다|됩니다|임\.?|라고 하|로 밝혀)"
-)
-
-def _is_claim_like(sent: str) -> bool:
-    if not sent or len(sent) < 12:
-        return False
-    # 숫자/날짜/단위
-    if re.search(r"\d{4}년|\d{1,2}월|\d{1,2}일|[\d,]+|%|억원|만명|천명|km|kg|원", sent):
-        return True
-    if _CLAIM_ENDING_RE.search(sent):
-        return True
-    return False
-
-def extract_claims(article_text: str, max_claims: int = 3) -> List[str]:
-    sents = _split_sentences_ko(article_text)
-    cands = [s for s in sents if _is_claim_like(s)]
-
-    def _score_claim(s: str) -> float:
-        num_ratio = len(re.findall(r"\d", s)) / max(1, len(s))
-        return 0.7 * num_ratio + 0.3 * min(len(s), 200) / 200.0
-
-    cands.sort(key=_score_claim, reverse=True)
-    return cands[:max_claims]
-
-# =========================
-# 임베더 (SBERT → BoW 폴백)
+# 임베더
 # =========================
 class SimpleEmbedder:
-    """
-    백엔드:
-      - sentence-transformers (권장, EMBED_MODEL)
-      - 실패 시 BoW 코사인(간이)
-    """
-    def __init__(self):
-        self.name = os.environ.get("EMBED_MODEL", "intfloat/multilingual-e5-base")
-        self.backend = None
+    def __init__(self, model_name: str = "intfloat/multilingual-e5-base"):
         self.uses_sbert = False
-        if _HAS_SENT_EMB:
+        self.backend = None
+        if _HAS_SBERT:
             try:
-                self.backend = SentenceTransformer(self.name)
+                self.backend = SentenceTransformer(model_name)
                 self.uses_sbert = True
             except Exception:
                 self.backend = None
+                self.uses_sbert = False
 
-    def _bow_vec(self, text: str) -> Dict[str, float]:
-        toks = re.findall(r"[A-Za-z가-힣0-9]+", (text or "").lower())
+    # BoW 전용 내부 벡터
+    def _bow_vec(self, s: str) -> Dict[str, float]:
+        toks = _tokenize_kor_en(s)
+        if not toks:
+            return {}
+        # tf / sqrt(len)
         d: Dict[str, float] = {}
         for t in toks:
             d[t] = d.get(t, 0.0) + 1.0
-        norm = math.sqrt(sum(v*v for v in d.values())) or 1.0
+        norm = math.sqrt(sum(v*v for v in d.values()))
+        if norm == 0:
+            return d
         for k in d:
             d[k] /= norm
         return d
@@ -171,86 +170,74 @@ class EvidenceChunk:
     source: str
 
 # =========================
-# PDF 텍스트 추출 (경로/바이트 + OCR 폴백)
+# PDF 텍스트 추출
 # =========================
-def _extract_page_texts_from_pdf(
-    *, 
-    path: Optional[str] = None, 
-    pdf_bytes: Optional[bytes] = None,
-    ocr_lang: str = "kor+eng",
-    ocr_min_len: int = 20,
-    render_scale: float = 2.0,
-) -> List[str]:
+def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional[bytes] = None) -> List[str]:
     """
-    1) PyMuPDF 있으면 그대로 사용 (경로 또는 바이트 스트림)
-    2) 텍스트가 거의 없으면 해당 페이지를 이미지 렌더 → Tesseract OCR (kor+eng)
-    3) PyMuPDF 없으면 pypdf로 텍스트만 추출 (OCR 없음)
+    각 페이지의 텍스트를 리스트로 반환.
+    우선순위: PyMuPDF → pypdf. PyMuPDF 사용 시 텍스트가 매우 적으면 OCR 시도.
     """
-    pages_text: List[str] = []
+    texts: List[str] = []
 
-    # 1) PyMuPDF 경로/바이트 오픈
+    # PyMuPDF 경로
     if _HAS_PYMUPDF:
         try:
             if pdf_bytes is not None:
                 doc = fitz.open(stream=pdf_bytes, filetype="pdf")
             else:
-                if not path:
-                    raise ValueError("No path provided")
+                assert path is not None, "path or pdf_bytes required"
                 doc = fitz.open(path)
             for page in doc:
-                text = page.get_text("text") or ""
-                # OCR 폴백: 텍스트가 너무 짧으면 이미지 렌더링 후 OCR
-                if _HAS_TESS and len(text.strip()) < ocr_min_len:
+                t = page.get_text("text") or ""
+                t = _normalize_spaces(t)
+                # 텍스트가 지나치게 적으면 OCR 시도
+                if len(t) < 30 and _HAS_TESS:
                     try:
-                        mat = fitz.Matrix(render_scale, render_scale)
-                        pix = page.get_pixmap(matrix=mat)
-                        img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-                        try:
-                            ocr_txt = pytesseract.image_to_string(img, lang=ocr_lang)
-                        except Exception:
-                            ocr_txt = pytesseract.image_to_string(img)
-                        text = (text + "\n" + (ocr_txt or "")).strip()
+                        pix = page.get_pixmap(dpi=200)
+                        img_bytes = pix.tobytes("png")
+                        img = Image.open(io.BytesIO(img_bytes))
+                        lang = "kor+eng"
+                        t_ocr = pytesseract.image_to_string(img, lang=lang)
+                        t2 = _normalize_spaces(t_ocr)
+                        if len(t2) > len(t):
+                            t = t2
                     except Exception:
-                        # OCR 렌더 실패 시 그냥 통과
                         pass
-                pages_text.append(text)
-            try:
-                doc.close()
-            except Exception:
-                pass
-            return pages_text
+                texts.append(t)
+            doc.close()
+            return texts
         except Exception:
+            # fall through to pypdf
             pass
 
-    # 2) pypdf 폴백(텍스트만, OCR 없음)
+    # pypdf 폴백
     if _HAS_PYPDF:
         try:
             if pdf_bytes is not None:
                 reader = PdfReader(io.BytesIO(pdf_bytes))
             else:
-                if not path:
-                    raise ValueError("No path provided")
+                assert path is not None, "path or pdf_bytes required"
                 reader = PdfReader(path)
             for p in reader.pages:
-                text = p.extract_text() or ""
-                pages_text.append(text)
-            return pages_text
+                t = p.extract_text() or ""
+                texts.append(_normalize_spaces(t))
+            return texts
         except Exception:
             pass
 
-    # 3) 전부 실패
-    return []
+    # 둘 다 실패하면 빈 리스트
+    return texts
 
 # =========================
-# PDF 인덱스: 로드/인덱스/검색
+# PDF 인덱스
 # =========================
 class PDFIndex:
     def __init__(self, embedder: Optional[SimpleEmbedder] = None, chunk_chars: int = 600, overlap: int = 100):
         self.embedder = embedder or SimpleEmbedder()
-        self.chunk_chars = int(os.environ.get("PDF_CHUNK_CHARS", chunk_chars))
-        self.overlap = int(os.environ.get("PDF_CHUNK_OVERLAP", overlap))
+        self.chunk_chars = chunk_chars
+        self.overlap = overlap
         self.chunks: List[EvidenceChunk] = []
-        self._vecs = None  # SBERT 벡터 or BoW 벡터
+        self._chunk_embeds = None
 
     def load_pdfs(
         self, 
@@ -285,54 +272,61 @@ class PDFIndex:
     def build(self) -> None:
         """청크 임베딩 미리 계산"""
         if not self.chunks:
-            self._vecs = []
+            self._chunk_embeds = []
             return
         texts = [c.text for c in self.chunks]
-        self._vecs = self.embedder.encode(texts)
+        self._chunk_embeds = self.embedder.encode(texts)
 
     def search(self, query: str, k: int = 5) -> List[EvidenceChunk]:
-        """질의문에 가장 유사한 증거 청크 k개 반환"""
+        """쿼리와 가장 유사한 청크 상위 k개 반환 (심플 코사인)"""
         if not self.chunks:
             return []
-        q_vec = self.embedder.encode([_normalize_spaces(query)])[0]
-        if self._vecs is None:
+        if self._chunk_embeds is None:
             self.build()
-
-        scored: List[Tuple[float, int]] = []
-        for idx, vec in enumerate(self._vecs or []):
-            sim = self.embedder.cosine(q_vec, vec)
-            scored.append((sim, idx))
-        scored.sort(reverse=True, key=lambda x: x[0])
-
-        out: List[EvidenceChunk] = []
-        for sim, idx in scored[:k]:
-            c = self.chunks[idx]
-            out.append(EvidenceChunk(text=c.text, page=c.page, sim=float(sim), source=c.source))
+        q_embed = self.embedder.encode([query])[0]
+        scored: List[Tuple[float, EvidenceChunk]] = []
+        for emb, ch in zip(self._chunk_embeds, self.chunks):
+            sim = self.embedder.cosine(q_embed, emb)
+            scored.append((sim, ch))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        out = []
+        for sim, ch in scored[:max(1, k)]:
+            out.append(EvidenceChunk(text=ch.text, page=ch.page, sim=float(sim), source=ch.source))
         return out
 
 # =========================
-# 간이 Claim → Evidence → 점수화
+# 주장 추출
 # =========================
-def _score_claim_with_evidence(claim: str, evs: List[EvidenceChunk]) -> float:
+def extract_claims(clean_text: str, max_claims: int = 3) -> List[str]:
     """
-    매우 간단한 스코어러:
-      - 상위 evidence 유사도들의 평균을 0~1로 클램프하여 사용
-    (선택) transformers NLI가 있으면 entailment 확률로 대체 가능 (TODO)
+    입력 텍스트에서 주요 주장(문장) 추출 (간이 버전)
+    - 문장 단위로 분할 → 너무 짧은 문장 제외 → 앞쪽에서 max_claims개
     """
-    if not evs:
-        return 0.0
-    sims = [max(0.0, min(1.0, e.sim)) for e in evs]
-    sims = sims[:3] if len(sims) >= 3 else sims  # 상위 3개 평균
-    return float(sum(sims) / max(1, len(sims)))
+    sents = _split_sentences(clean_text or "")
+    sents = [s for s in sents if len(s) >= 8]
+    sents = _dedupe_keep_order(sents)
+    if not sents and clean_text:
+        sents = [clean_text.strip()]
+    return sents[:max(1, max_claims)]
 
 # =========================
-# 외부에서 호출하는 단일 엔트리포인트
+# 스코어링
 # =========================
+def _score_claim_with_evidence(claim: str, idx: PDFIndex, topk: int = 5) -> Tuple[float, List[EvidenceChunk]]:
+    """
+    한 개 주장에 대해 PDFIndex에서 topk 증거를 찾고 최고 유사도를 반환
+    """
+    evids = idx.search(claim, k=topk) if idx else []
+    best = max((e.sim for e in evids), default=0.0)
+    return float(best), evids
+
 def score_with_pdf(
-    clean_text: str, 
+    clean_text: str,
     pdf_paths: Optional[List[str]] = None,
-    pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,  # (파일명, 바이트)
-    topk: int = 5
+    pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,
+    topk: int = 5,
+    chunk_chars: int = 600,
+    overlap: int = 100,
 ) -> Dict[str, Any]:
     """
     clean_text에서 주장문을 추출 → PDF에서 증거 검색 → 정확성 점수 산출
@@ -345,38 +339,48 @@ def score_with_pdf(
         "meta": {...}
       }
     """
+    idx = PDFIndex(chunk_chars=chunk_chars, overlap=overlap)
+    idx.load_pdfs(pdf_paths=pdf_paths, pdf_blobs=pdf_blobs)
+
     claims = extract_claims(clean_text, max_claims=3)
 
-    # PDF 준비 (경로/바이트 모두 지원)
-    idx = PDFIndex()
-    idx.load_pdfs(pdf_paths=pdf_paths, pdf_blobs=pdf_blobs)
-    idx.build()
+    if not idx.chunks:
+        # 증거가 하나도 없으면 S_fact는 None, 증거 필요 플래그 ON
+        return {
+            "S_fact": None,
+            "need_evidence": True if claims else False,
+            "claims": claims,
+            "evidence": {},
+            "meta": {
+                "chunks": 0,
+                "uses_sbert": idx.embedder.uses_sbert,
+                "has_pymupdf": _HAS_PYMUPDF,
+                "has_pypdf": _HAS_PYPDF,
+                "has_tesseract": _HAS_TESS,
+            }
+        }
 
+    per_claim_scores: List[float] = []
     evidence_map: Dict[str, List[Dict[str, Any]]] = {}
-    claim_scores: List[float] = []
 
-    has_pdf_index = bool(idx.chunks)
-
-    for cl in claims:
-        ev_chunks: List[EvidenceChunk] = idx.search(cl, k=topk) if has_pdf_index else []
-        evidence_map[cl] = [
+    for claim in claims:
+        best, evs = _score_claim_with_evidence(claim, idx, topk=topk)
+        per_claim_scores.append(best)
+        evidence_map[claim] = [
             {"text": e.text, "page": e.page, "sim": float(e.sim), "source": e.source}
-            for e in ev_chunks
+            for e in evs
         ]
-        score = _score_claim_with_evidence(cl, ev_chunks) if has_pdf_index else None
-        if score is not None:
-            claim_scores.append(score)
 
-    if has_pdf_index and claim_scores:
-        S_fact = clamp01(sum(claim_scores) / len(claim_scores))
-        need_evidence = False
-    else:
-        S_fact = None
-        need_evidence = True if claims else False
+    S_fact = None
+    if per_claim_scores:
+        S_fact = float(sum(per_claim_scores) / len(per_claim_scores))
+        S_fact = clamp01(S_fact)
+
+    need_evidence = (S_fact is None) or (S_fact < 0.3 and any(len(v) == 0 for v in evidence_map.values()))
 
     return {
         "S_fact": S_fact,
-        "need_evidence": need_evidence,
+        "need_evidence": bool(need_evidence),
         "claims": claims,
         "evidence": evidence_map,
         "meta": {
