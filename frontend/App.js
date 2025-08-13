@@ -295,7 +295,7 @@ export default function App() {
 
       {tab === 'community' ? (
         // 커뮤니티 화면
-        <CommunityApp />
+        <CommunityApp onBackToAnalyze={() => setTab('analyze')} />
       ) : (
         // 분석/등록 화면
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
