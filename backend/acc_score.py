@@ -3,8 +3,7 @@ import torch
 import pandas as pd
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertModel
-from kobert_transformers import get_tokenizer
+from transformers import BertModel, BertTokenizer
 from tqdm import tqdm
 
 # ---------------------------
@@ -73,7 +72,7 @@ def train():
         'positive': 1.0
     }
 
-    tokenizer = get_tokenizer()
+    tokenizer = BertTokenizer.from_pretrained("monologg/kobert")
     dataset = FinanceDataset(df, tokenizer, label_map)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -105,7 +104,7 @@ def train():
 # 추론 함수
 # ---------------------------
 def predict_with_kobert(text: str) -> float:
-    tokenizer = get_tokenizer()
+    tokenizer = BertTokenizer.from_pretrained("monologg/kobert")
     model = KoBERTRegressor().to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
