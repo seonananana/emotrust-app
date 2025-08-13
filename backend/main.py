@@ -700,13 +700,18 @@ async def create_post(p: PostIn):
         "mint_error": mint_error,
     }
 
+# main.py
+# -*- coding: utf-8 -*-
+
+<전체 코드 생략: 이전과 동일>
+
 @app.get("/posts/{post_id}", response_model=PostOut)
 async def get_post(post_id: int):
     if not USE_DB:
         obj = _jsonl_get(post_id)
         if not obj:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
-               # 댓글 보너스 반영
+        # 댓글 보너스 반영
         sc = obj["scores"]
         meta = obj["meta"]
         meta = meta or {}
@@ -727,35 +732,34 @@ async def get_post(post_id: int):
             analysis_id=obj.get("analysis_id", ""),
             created_at=obj.get("created_at", datetime.utcnow().isoformat() + "Z"),
         )
- 
-     # DB 모드
-from sqlalchemy.orm import Session  # type: ignore
 
-with SessionLocal() as db:  # type: ignore
-    obj = db.get(Post, post_id)  # type: ignore
-    if not obj:
-        raise HTTPException(status_code=404, detail="NOT_FOUND")
+    # DB 모드
+    from sqlalchemy.orm import Session  # type: ignore
+    with SessionLocal() as db:  # type: ignore
+        obj = db.get(Post, post_id)  # type: ignore
+        if not obj:
+            raise HTTPException(status_code=404, detail="NOT_FOUND")
 
-    scores = _from_json_str(obj.scores_json, {})  # type: ignore
-    meta = _from_json_str(obj.meta_json, {})      # type: ignore
-    extras = _score_extras_with_comments(scores, meta)
-    meta["score_extras"] = extras
-    scores = {**scores, **extras}
+        scores = _from_json_str(obj.scores_json, {})  # type: ignore
+        meta = _from_json_str(obj.meta_json, {})      # type: ignore
+        extras = _score_extras_with_comments(scores, meta)
+        meta["score_extras"] = extras
+        scores = {**scores, **extras}
 
-    return PostOut(
-        id=obj.id,
-        title=obj.title,
-        content=obj.content,
-        scores=scores,
-        weights=_from_json_str(obj.weights_json, {}),
-        files=_from_json_str(obj.files_json, {}),
-        meta=meta,
-        denom_mode=obj.denom_mode,
-        gate=obj.gate,
-        analysis_id=obj.analysis_id or "",
-        created_at=(obj.created_at.isoformat() + "Z"),
-    )
- 
+        return PostOut(
+            id=obj.id,
+            title=obj.title,
+            content=obj.content,
+            scores=scores,
+            weights=_from_json_str(obj.weights_json, {}),
+            files=_from_json_str(obj.files_json, {}),
+            meta=meta,
+            denom_mode=obj.denom_mode,
+            gate=obj.gate,
+            analysis_id=obj.analysis_id or "",
+            created_at=(obj.created_at.isoformat() + "Z"),
+        )
+
 async def list_posts(limit: int = 20, offset: int = 0):
      if not USE_DB:
          items_raw = _jsonl_list(limit=limit, offset=offset)
