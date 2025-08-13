@@ -703,8 +703,6 @@ async def create_post(p: PostIn):
 # main.py
 # -*- coding: utf-8 -*-
 
-<전체 코드 생략: 이전과 동일>
-
 @app.get("/posts/{post_id}", response_model=PostOut)
 async def get_post(post_id: int):
     if not USE_DB:
