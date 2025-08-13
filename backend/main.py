@@ -729,7 +729,7 @@ async def get_post(post_id: int):
         )
  
      # DB 모드
-     from sqlalchemy.orm import Session  # type: ignore
+from sqlalchemy.orm import Session  # type: ignore
      with SessionLocal() as db:  # type: ignore
          obj = db.get(Post, post_id)  # type: ignore
          if not obj:
