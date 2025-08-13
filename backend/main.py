@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
 from simulate_chain import sim_mint, sim_balance_of
+
 # ────────────────────────────────────────────────────────────────────────────────
 # ENV 로드 (backend/.env → hardhat/.env 순서로)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -460,7 +461,10 @@ async def analyze_and_mint(req: AnalyzeMintReq):
             "scores": scores,
         }
 
-    # --- 실제 민팅 (EMOTRUST_DISABLE_MINT=0 && SIMULATE_CHAIN=0) ---
+    # --- 실제 민팅 (EMOTRUST_DISABLE_MINT=0 && EMOTRUST_SIMULATE_CHAIN=0) ---
+    from mint.mint import send_mint, wait_token_id  # lazy import (운영 전환 시)
+    if not req.to_address:
+        raise HTTPException(status_code=400, detail="to_address가 필요합니다.")
     m1 = send_mint(req.to_address)
     m2 = wait_token_id(m1.tx_hash)
     return {
@@ -468,56 +472,6 @@ async def analyze_and_mint(req: AnalyzeMintReq):
         "tx_hash": m1.tx_hash,
         "token_id": m2.token_id,
         "scores": scores,
-    }
-    # 2) 게이트 미통과: 점수만 반환
-    if not res.get("gate_pass"):
-        return {
-            "ok": True,
-            "minted": False,
-            "scores": {"S_acc": res.get("S_acc", 0.0), "S_sinc": res.get("S_sinc", 0.0), "S_pre": res.get("S_pre", 0.0)},
-            "pii": {"action": res.get("pii_action", "allow"), "reasons": res.get("pii_reasons", [])},
-        }
-
-    # 3) 체인에 남길 메타데이터(마스킹된 본문 + 전체 해시 + 점수)
-    masked = res.get("clean_text") or ""
-    MAX_LEN = int(os.getenv("TOKENURI_TEXT_MAX", "1000"))
-    meta = {
-        "name": "Empathy Post",
-        "description": "Masked text + scores recorded on-chain",
-        "text": masked[:MAX_LEN],
-        "text_hash": f"sha256:{sha256(masked.encode('utf-8')).hexdigest()}",
-        "scores": {
-            "S_acc": round(res.get("S_acc", 0.0), 3),
-            "S_sinc": round(res.get("S_sinc", 0.0), 3),
-            "S_pre": round(res.get("S_pre", 0.0), 3),
-        },
-        "version": "v1",
-    }
-
-    # 4) 민팅(서명/전송) → tokenId  (PUBLIC_ADDRESS 없으면 PRIVATE_KEY로 자동 파생)
-    to_addr = req.to_address or os.getenv("PUBLIC_ADDRESS")
-    if not to_addr:
-        pk = os.getenv("PRIVATE_KEY")
-        if pk:
-            from web3 import Web3
-            to_addr = Web3().eth.account.from_key(pk).address
-    if not to_addr:
-        raise HTTPException(status_code=500, detail="PUBLIC_ADDRESS not set")
-
-    try:
-        from mint.mint import send_mint, wait_token_id  # lazy import
-        tx_hash = send_mint(to_addr, meta)
-        token_id, _ = wait_token_id(tx_hash)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"mint send failed: {e}")
-
-    return {
-        "ok": True,
-        "minted": True,
-        "tx_hash": tx_hash,
-        "explorer": f"https://sepolia.etherscan.io/tx/{tx_hash}",
-        "token_id": token_id,
-        "scores": meta["scores"],
     }
 
 @app.post("/posts")
@@ -603,12 +557,18 @@ async def create_post(p: PostIn):
             if not to_addr:
                 raise RuntimeError("PUBLIC_ADDRESS not set")
 
-            # 실제 민팅
-            from mint.mint import send_mint, wait_token_id  # lazy import
-            tx_hash = send_mint(to_addr, meta_token)
-            token_id, _ = wait_token_id(tx_hash)
-            minted = True
-            explorer = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+            # --- B안: 시뮬 민팅 분기 ---
+            if os.getenv("EMOTRUST_SIMULATE_CHAIN", "0") == "1":
+                tx_hash, token_id = sim_mint(to_addr)
+                minted = True
+                explorer = None  # 시뮬이므로 익스플로러 링크 없음
+            else:
+                # 실제 민팅 (운영 전환 시)
+                from mint.mint import send_mint, wait_token_id  # lazy import
+                tx_hash = send_mint(to_addr, meta_token)
+                token_id, _ = wait_token_id(tx_hash)
+                minted = True
+                explorer = f"https://sepolia.etherscan.io/tx/{tx_hash}"
 
             # 3) 민팅 결과를 저장 데이터에 반영
             if not USE_DB:
@@ -675,7 +635,7 @@ async def get_post(post_id: int):
             content=obj.content,
             scores=_from_json_str(obj.scores_json, {}),
             weights=_from_json_str(obj.weights_json, {}),
-            files=_from_json_str(obj.files_json, []),
+            files=_from_json_str(obj.files_json, {}),
             meta=_from_json_str(obj.meta_json, {}),
             denom_mode=obj.denom_mode,
             gate=obj.gate,
