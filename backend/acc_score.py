@@ -249,7 +249,8 @@ class PDFIndex:
                         chunks.append(EvidenceChunk(text=c, page=pno, sim=0.0, source=base))
 
         self.chunks = chunks
-            def build(self) -> None:
+            
+    def build(self) -> None:
         if not self.chunks:
             self._chunk_embeds = []
             return
