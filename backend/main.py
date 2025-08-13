@@ -783,27 +783,28 @@ async def list_posts(limit: int = 20, offset: int = 0):
                  }
              )
          return {"ok": True, "items": items, "count": len(items)}
- 
-         for obj in q.all():
-             scores = _from_json_str(obj.scores_json, {})
-             scores = _from_json_str(obj.scores_json, {})
-             meta = _from_json_str(obj.meta_json, {})
-             extras = _score_extras_with_comments(scores, meta)
-             items.append(
-                 {
-                     "id": obj.id,
-                     "title": obj.title,
-                     "created_at": obj.created_at.isoformat() + "Z",
-                     "S_pre": scores.get("S_pre"),
-                     "S_sinc": scores.get("S_sinc"),
-                     "S_acc": scores.get("S_acc") or scores.get("S_fact"),
-                     "gate": obj.gate,
-                     "gate_pass": scores.get("gate_pass"),
-                     "S_effective": extras["S_effective"],
-                     "likes": (meta or {}).get("likes"),
-                 }
-             )
-         return {"ok": True, "items": items, "count": len(items)}
+
+for obj in q.all():
+    scores = _from_json_str(obj.scores_json, {})
+    meta = _from_json_str(obj.meta_json, {})
+    extras = _score_extras_with_comments(scores, meta)
+    
+    items.append(
+        {
+            "id": obj.id,
+            "title": obj.title,
+            "created_at": obj.created_at.isoformat() + "Z",
+            "S_pre": scores.get("S_pre"),
+            "S_sinc": scores.get("S_sinc"),
+            "S_acc": scores.get("S_acc") or scores.get("S_fact"),
+            "gate": obj.gate,
+            "gate_pass": scores.get("gate_pass"),
+            "S_effective": extras.get("S_effective"),
+            "likes": meta.get("likes") if meta else None,
+        }
+    )
+
+return {"ok": True, "items": items, "count": len(items)}
 
 # ─────────────────────────────────────────────────────────
 # 댓글 목록
