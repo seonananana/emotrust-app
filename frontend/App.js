@@ -12,8 +12,10 @@ import {
   KeyboardAvoidingView,
   Alert,
   TouchableOpacity,
+  Linking,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
+import CommunityApp from './CommunityApp';
 
 // ====== ENV (ngrok HTTPS만 허용) ======
 const RAW_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
@@ -35,6 +37,9 @@ async function fetchJSON(url, { method = 'GET', headers, body, timeout = 5000 } 
 }
 
 export default function App() {
+  // 화면 탭: 'analyze' | 'community'
+  const [tab, setTab] = useState('analyze');
+
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
   const [result, setResult] = useState(null);
@@ -48,8 +53,10 @@ export default function App() {
   // 저장 상태
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState(null);
+  const [mintInfo, setMintInfo] = useState(null); // { minted, token_id, tx_hash, explorer, mint_error }
 
-  const [gate, setGate] = useState(0.70); // [ADDED] 게이트 값을 상태로 관리 (정규화 0~1)
+  // 게이트(정규화 0~1)
+  const [gate, setGate] = useState(0.70);
 
   // ✅ 초기 Base URL: env(HTTPS)만 허용 — 폴백 없음
   useEffect(() => {
@@ -104,10 +111,11 @@ export default function App() {
   const removePDF = (idx) => setPdfs((prev) => prev.filter((_, i) => i !== idx));
   const clearPDFs = () => setPdfs([]);
 
-  // ✅ 게이트 통과 시 저장 API
+  // ✅ 게이트 통과 시 저장(API: /posts) — 백엔드가 자동 민팅 수행
   const savePost = async ({ analysis, meta }) => {
     setSaving(true);
     setSavedId(null);
+    setMintInfo(null);
 
     const payload = {
       title,
@@ -124,12 +132,14 @@ export default function App() {
       },
       weights: { w_acc: 0.5, w_sinc: 0.5 },
       denom_mode: meta?.denom_mode || 'all',
-      gate: meta?.gate ?? gate, // [CHANGED] 저장 시에도 현재 gate를 동기화
+      gate: meta?.gate ?? gate,
       files: pdfs.map(f => ({ name: f.name, size: f.size })),
       meta: {
         ...meta,
         title_len: title.length,
         content_len: content.length,
+        // analyzer의 clean_text(마스킹 텍스트)를 백엔드 토큰 메타에 활용하도록 전달
+        masked_text: analysis.clean_text,
       },
       analysis_id: meta?.analysis_id || null,
     };
@@ -138,7 +148,7 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-      timeout: 15000,
+      timeout: 20000,
     });
 
     setSaving(false);
@@ -146,9 +156,32 @@ export default function App() {
       Alert.alert('저장 실패', `HTTP ${status}\n${(data?.message || raw || '').slice(0, 200)}`);
       return;
     }
+
     const id = data?.post_id || data?.id;
     setSavedId(id || null);
-    Alert.alert('등록 완료', id ? `글이 저장되었어요. #${id}` : '글이 저장되었어요.');
+
+    // 자동 민팅 결과 저장 + 알림
+    const info = {
+      minted: !!data?.minted,
+      token_id: data?.token_id ?? null,
+      tx_hash: data?.tx_hash ?? null,
+      explorer: data?.explorer ?? null,
+      mint_error: data?.mint_error ?? null,
+    };
+    setMintInfo(info);
+
+    if (info.minted) {
+      Alert.alert(
+        '등록+민팅 완료',
+        `#${id}\ntoken_id: ${info.token_id}\nTx: ${info.tx_hash}`,
+        info.explorer
+          ? [{ text: 'Etherscan', onPress: () => Linking.openURL(info.explorer) }, { text: '확인' }]
+          : [{ text: '확인' }]
+      );
+    } else {
+      const why = info.mint_error ? `\n(민팅 실패: ${String(info.mint_error).slice(0,140)})` : '';
+      Alert.alert('등록 완료', `글이 저장되었습니다. #${id}${why}`);
+    }
   };
 
   const handleSubmit = async () => {
@@ -164,6 +197,7 @@ export default function App() {
     setLoading(true);
     setResult(null);
     setSavedId(null);
+    setMintInfo(null);
 
     const formData = new FormData();
     formData.append('title', title.trim());
@@ -171,7 +205,7 @@ export default function App() {
     formData.append('denom_mode', 'all');
     formData.append('w_acc', String(0.5));
     formData.append('w_sinc', String(0.5));
-    formData.append('gate', String(gate)); // [CHANGED] 고정 0.70 → 상태 gate 사용
+    formData.append('gate', String(gate));
 
     for (const f of pdfs) {
       formData.append('pdfs', {
@@ -206,14 +240,13 @@ export default function App() {
 
       setResult(data);
 
-      // ✅ 게이트 통과 시 자동 저장
+      // ✅ 게이트 통과 시 자동 저장(→ 백엔드가 민팅까지 수행)
       const a = data.result;
       if (a?.gate_pass === true) {
         await savePost({ analysis: a, meta: data.meta });
       } else {
         Alert.alert(
           '게이트 미통과',
-          // [CHANGED] 실제 사용된 게이트 값(정규화) 표기
           `최종 점수(S_pre)가 설정 임계값(${(a?.gate_used ?? gate).toFixed(2)}) 미만이라 저장하지 않았습니다.`
         );
       }
@@ -236,143 +269,205 @@ export default function App() {
     };
   }, [pdfs]);
 
+  // ─────────────────────────────────────────────────────────────
+  // 렌더
+  // ─────────────────────────────────────────────────────────────
   return (
     <KeyboardAvoidingView
       behavior={Platform.select({ ios: 'padding', android: undefined })}
       style={{ flex: 1 }}
     >
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        {/* 상태/디버그 박스 */}
-        <View style={styles.debugBox}>
-          <Text style={styles.debugTitle}>Backend</Text>
-          <Text selectable style={styles.debugText}>
-            URL: {backendURL || '(없음)'}
-          </Text>
-          <Text style={[styles.debugText, { marginTop: 6 }]}>
-            📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})
-          </Text>
-          <View style={{ marginTop: 8, flexDirection: 'row', gap: 8 }}>
-            {/* [ADDED] 개발용 게이트 토글 */}
-            <Button title="Gate 0.70" onPress={() => setGate(0.70)} />
-            <Button title="0.50" onPress={() => setGate(0.50)} />
-            <Button title="0.12" onPress={() => setGate(0.12)} />
+      {/* 상단 탭 */}
+      <View style={styles.topTabs}>
+        <TouchableOpacity
+          onPress={() => setTab('analyze')}
+          style={[styles.tabBtn, tab === 'analyze' && styles.tabBtnActive]}
+        >
+          <Text style={[styles.tabTxt, tab === 'analyze' && styles.tabTxtActive]}>분석/등록</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          onPress={() => setTab('community')}
+          style={[styles.tabBtn, tab === 'community' && styles.tabBtnActive]}
+        >
+          <Text style={[styles.tabTxt, tab === 'community' && styles.tabTxtActive]}>커뮤니티</Text>
+        </TouchableOpacity>
+      </View>
+
+      {tab === 'community' ? (
+        // 커뮤니티 화면
+        <CommunityApp />
+      ) : (
+        // 분석/등록 화면
+        <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
+          {/* 상태/디버그 박스 */}
+          <View style={styles.debugBox}>
+            <Text style={styles.debugTitle}>Backend</Text>
+            <Text selectable style={styles.debugText}>
+              URL: {backendURL || '(없음)'}
+            </Text>
+            <Text style={[styles.debugText, { marginTop: 6 }]}>
+              📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})
+            </Text>
+            <View style={{ marginTop: 8, flexDirection: 'row', gap: 8 }}>
+              <Button title="Gate 0.70" onPress={() => setGate(0.70)} />
+              <Button title="0.50" onPress={() => setGate(0.50)} />
+              <Button title="0.12" onPress={() => setGate(0.12)} />
+            </View>
+            <Text style={{ color: '#475569', marginTop: 4 }}>
+              현재 Gate(정규화): {gate}
+            </Text>
           </View>
-          <Text style={{ color: '#475569', marginTop: 4 }}>
-            현재 Gate(정규화): {gate}
-          </Text>
-        </View>
 
-        <Text style={styles.label}>제목</Text>
-        <TextInput
-          style={styles.input}
-          value={title}
-          onChangeText={setTitle}
-          placeholder="제목을 입력하세요"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
+          <Text style={styles.label}>제목</Text>
+          <TextInput
+            style={styles.input}
+            value={title}
+            onChangeText={setTitle}
+            placeholder="제목을 입력하세요"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
 
-        <Text style={styles.label}>내용</Text>
-        <TextInput
-          style={[styles.input, { height: 120 }]}
-          value={content}
-          onChangeText={setContent}
-          placeholder="내용을 입력하세요"
-          multiline
-        />
+          <Text style={styles.label}>내용</Text>
+          <TextInput
+            style={[styles.input, { height: 120 }]}
+            value={content}
+            onChangeText={setContent}
+            placeholder="내용을 입력하세요"
+            multiline
+          />
 
-        {/* 파일 업로드 UI */}
-        <View style={{ marginTop: 12, gap: 8 }}>
-          <Button title="📎 PDF 첨부" onPress={pickPDFs} />
-          {pdfs.length > 0 && (
-            <View style={styles.filesBox}>
-              {pdfs.map((f, i) => (
-                <View key={f.uri + i} style={styles.fileRow}>
-                  <Text numberOfLines={1} style={{ flex: 1 }}>
-                    {f.name || 'evidence.pdf'}
-                  </Text>
-                  <TouchableOpacity onPress={() => removePDF(i)} style={styles.removeBtn}>
-                    <Text style={{ color: '#b00020', fontWeight: '700' }}>삭제</Text>
-                  </TouchableOpacity>
+          {/* 파일 업로드 UI */}
+          <View style={{ marginTop: 12, gap: 8 }}>
+            <Button title="📎 PDF 첨부" onPress={pickPDFs} />
+            {pdfs.length > 0 && (
+              <View style={styles.filesBox}>
+                {pdfs.map((f, i) => (
+                  <View key={f.uri + i} style={styles.fileRow}>
+                    <Text numberOfLines={1} style={{ flex: 1 }}>
+                      {f.name || 'evidence.pdf'}
+                    </Text>
+                    <TouchableOpacity onPress={() => removePDF(i)} style={styles.removeBtn}>
+                      <Text style={{ color: '#b00020', fontWeight: '700' }}>삭제</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+                <View style={{ marginTop: 6 }}>
+                  <Button title="첨부 초기화" color="#64748b" onPress={clearPDFs} />
                 </View>
-              ))}
-              <View style={{ marginTop: 6 }}>
-                <Button title="첨부 초기화" color="#64748b" onPress={clearPDFs} />
               </View>
+            )}
+          </View>
+
+          <View style={{ marginTop: 16 }}>
+            <Button
+              title={loading ? '분석 중…' : '분석 요청'}
+              onPress={handleSubmit}
+              disabled={!canSubmit}
+            />
+          </View>
+
+          {/* 결과 표시 */}
+          {result?.result && (
+            <View style={styles.resultBox}>
+              <Text style={styles.resultTitle}>📊 분석 결과</Text>
+
+              <Text>
+                최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}점 / 100
+                {'  '}(정규화 {(result.result.S_pre).toFixed(3)})
+              </Text>
+              <Text>
+                진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}점 / 100
+                {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
+              </Text>
+              <Text>
+                팩트(S_fact): {result.result.S_fact == null
+                  ? '검증 불가'
+                  : `${(result.result.S_fact * 100).toFixed(1)}점 / 100 (정규화 ${result.result.S_fact.toFixed(3)})`}
+              </Text>
+
+              {'gate_used' in result.result && (
+                <Text>
+                  게이트: {(result.result.gate_used * 100).toFixed(1)}점 / 100
+                  {'  '}(정규화 {result.result.gate_used.toFixed(3)})
+                </Text>
+              )}
+
+              <Text>커버리지: {(result.result.coverage * 100).toFixed(1)}%</Text>
+              <Text>토큰 수: {result.result.total} / 매칭: {result.result.matched}</Text>
+              <Text>PII 처리: {result.result.masked ? '마스킹됨' : '그대로'}</Text>
+              <Text>게이트 통과: {result.result.gate_pass ? '✅' : '❌'}</Text>
+
+              {saving && (
+                <View style={{ flexDirection:'row', alignItems:'center', gap:8, marginTop:6 }}>
+                  <ActivityIndicator />
+                  <Text>저장 중…</Text>
+                </View>
+              )}
+              {savedId && (
+                <Text style={{ marginTop:6 }}>📌 등록 완료 ID: {savedId}</Text>
+              )}
+
+              {/* 자동 민팅 결과 표시(선택) */}
+              {mintInfo && (
+                <View style={{ marginTop:8, gap:4 }}>
+                  <Text>민팅: {String(mintInfo.minted)}</Text>
+                  {mintInfo.token_id != null && <Text>token_id: {mintInfo.token_id}</Text>}
+                  {mintInfo.tx_hash && <Text numberOfLines={1}>tx: {mintInfo.tx_hash}</Text>}
+                  {mintInfo.explorer && (
+                    <Button title="Etherscan에서 보기" onPress={() => Linking.openURL(mintInfo.explorer)} />
+                  )}
+                  {!mintInfo.minted && mintInfo.mint_error && (
+                    <Text style={{ color:'#b00020' }}>민팅 오류: {mintInfo.mint_error}</Text>
+                  )}
+                </View>
+              )}
             </View>
           )}
-        </View>
 
-        <View style={{ marginTop: 16 }}>
-          <Button
-            title={loading ? '분석 중…' : '분석 요청'}
-            onPress={handleSubmit}
-            disabled={!canSubmit}
-          />
-        </View>
-
-        {/* 결과 표시 */}
-        {result?.result && (
-          <View style={styles.resultBox}>
-            <Text style={styles.resultTitle}>📊 분석 결과</Text>
-            {/* [REMOVED] 옛 표시 방식: 단순 퍼센트만 보여주던 라인 */}
-            {/* <Text>최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}</Text> */}
-
-            {/* [CHANGED] 보기용(0~100) + 정규화(0~1) 동시 표기 */}
-            <Text>
-              최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}점 / 100
-              {'  '}(정규화 {(result.result.S_pre).toFixed(3)})
-            </Text>
-            <Text>
-              진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}점 / 100
-              {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
-            </Text>
-            <Text>
-              팩트(S_fact): {result.result.S_fact == null
-                ? '검증 불가'
-                : `${(result.result.S_fact * 100).toFixed(1)}점 / 100 (정규화 ${result.result.S_fact.toFixed(3)})`}
-            </Text>
-
-            {/* [ADDED] 백엔드가 내려주는 실제 사용 게이트 값(정규화/원점수) 표기 */}
-            {'gate_used' in result.result && (
-              <Text>
-                게이트: {(result.result.gate_used * 100).toFixed(1)}점 / 100
-                {'  '}(정규화 {result.result.gate_used.toFixed(3)})
-              </Text>
-            )}
-
-            <Text>커버리지: {(result.result.coverage * 100).toFixed(1)}%</Text>
-            <Text>토큰 수: {result.result.total} / 매칭: {result.result.matched}</Text>
-            <Text>PII 처리: {result.result.masked ? '마스킹됨' : '그대로'}</Text>
-            <Text>게이트 통과: {result.result.gate_pass ? '✅' : '❌'}</Text>
-
-            {saving && (
-              <View style={{ flexDirection:'row', alignItems:'center', gap:8, marginTop:6 }}>
-                <ActivityIndicator />
-                <Text>저장 중…</Text>
-              </View>
-            )}
-            {savedId && (
-              <Text style={{ marginTop:6 }}>📌 등록 완료 ID: {savedId}</Text>
-            )}
-          </View>
-        )}
-
-        {/* 에러 박스 */}
-        {result?.error && (
-          <View style={[styles.resultBox, { backgroundColor: '#ffe6e6', borderColor: '#ffcccc' }]}>
-            <Text style={{ color: '#b00020', fontWeight: '600' }}>{result.error}</Text>
-            {result.raw_response && (
-              <Text style={{ marginTop: 8, color: '#333' }}>{result.raw_response}</Text>
-            )}
-          </View>
-        )}
-      </ScrollView>
+          {/* 에러 박스 */}
+          {result?.error && (
+            <View style={[styles.resultBox, { backgroundColor: '#ffe6e6', borderColor: '#ffcccc' }]}>
+              <Text style={{ color: '#b00020', fontWeight: '600' }}>{result.error}</Text>
+              {result.raw_response && (
+                <Text style={{ marginTop: 8, color: '#333' }}>{result.raw_response}</Text>
+              )}
+            </View>
+          )}
+        </ScrollView>
+      )}
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  // 상단 탭 스타일
+  topTabs: {
+    flexDirection: 'row',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 12,
+    paddingBottom: 8,
+    backgroundColor: '#f8fafc',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+  },
+  tabBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    backgroundColor: '#fff',
+  },
+  tabBtnActive: {
+    backgroundColor: '#eef2ff',
+    borderColor: '#c7d2fe',
+  },
+  tabTxt: { color: '#334155', fontWeight: '600' },
+  tabTxtActive: { color: '#1d4ed8' },
+
+  // 기존 스타일
   container: { padding: 20, gap: 6 },
   label: { fontWeight: '600', marginTop: 14, marginBottom: 6 },
   input: {
