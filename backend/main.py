@@ -274,16 +274,15 @@ def _save_pdfs(pdfs: Optional[List[UploadFile]]) -> List[str]:
 
 # 업로드 PDF를 (파일명, 바이트) 튜플 리스트로 수집
 def _collect_pdf_blobs(pdfs: Optional[List[UploadFile]]) -> List[Tuple[str, bytes]]:
-    if not pdfs:
-        return []
-    blobs: List[Tuple[str, bytes]] = []
-    for f in pdfs:
+    pdf_blobs: List[Tuple[str, bytes]] = []
+    for f in (pdfs or []):
         try:
-            data = _await_read_uploadfile(f)
-            blobs.append((f.filename or "uploaded.pdf", data))
-        except Exception:
-            continue
-    return blobs
+            blob = f.file.read()
+            print(f"✅ PDF: {f.filename}, Size: {len(blob)} bytes")
+            pdf_blobs.append((f.filename, blob))
+        except Exception as e:
+            print(f"❌ Error reading PDF {f.filename}: {e}")
+    return pdf_blobs
 
 def _to_json_str(obj: Any) -> str:
     try:
