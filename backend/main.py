@@ -378,13 +378,27 @@ async def analyze(
     try:
         text = f"{title}\n\n{content}".strip() if title else content
 
-        # 경로 저장(옵션) + 메모리 바이트(우선)
-        pdf_paths = _save_pdfs(pdfs) if pdfs else []
-        pdf_blobs = _collect_pdf_blobs(pdfs) if pdfs else []
+        # ✅ PDF 바이트 직접 수집 (pdfs: List[UploadFile])로부터
+        pdf_blobs = []
+        pdf_paths = []
 
+        if pdfs:
+            for pdf in pdfs:
+                pdf_bytes = await pdf.read()
+                pdf_blobs.append((pdf.filename, pdf_bytes))
+                # 필요시 로컬 저장 경로도 수집
+                # path = save_to_temp(pdf.filename, pdf_bytes)
+                # pdf_paths.append(path)
+
+        # 분석 파이프라인 호출
         out = _call_pre_pipeline_safe(
-            text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-            pdf_paths=pdf_paths, pdf_blobs=pdf_blobs
+            text=text,
+            denom_mode=denom_mode,
+            w_acc=w_acc,
+            w_sinc=w_sinc,
+            gate=gate,
+            pdf_paths=pdf_paths,     # 이건 비워둬도 무방
+            pdf_blobs=pdf_blobs      # 실제 핵심
         )
 
         return AnalyzeResponse(
@@ -392,16 +406,18 @@ async def analyze(
             meta={
                 "title": title,
                 "chars": len(text),
-                "pdf_count": len(pdf_blobs) if pdf_blobs else len(pdf_paths),
-                "pdf_paths": pdf_paths,  # 디버깅용
+                "pdf_count": len(pdf_blobs),
+                "pdf_paths": pdf_paths,
                 "denom_mode": denom_mode,
                 "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
                 "gate": gate,
             },
             result=PreResult(**out),
         )
+
     except FileNotFoundError as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)})
+
     except Exception as e:
         logger.exception("analyze failed")
         return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
