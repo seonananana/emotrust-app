@@ -302,21 +302,6 @@ def _call_pre_pipeline_safe(
 ) -> Dict[str, Any]:
     # analyzer.pre_pipeline 을 다양한 시그니처로 시도
     from analyzer import pre_pipeline as _pre  # lazy import
-    try:
-        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-                    pdf_paths=pdf_paths, pdf_blobs=pdf_blobs)
-    except TypeError:
-        pass
-    try:
-        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-                    pdf_blobs=pdf_blobs)
-    except TypeError:
-        pass
-    try:
-        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-                    pdf_paths=pdf_paths)
-    except TypeError:
-        pass
     return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate)
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -338,30 +323,7 @@ async def analyze(
     w_acc: float = Form(0.5),
     w_sinc: float = Form(0.5),
     gate: float = Form(0.70),
-    pdfs: Optional[List[UploadFile]] = File(None),
 ):
-    try:
-        text = f"{title}\n\n{content}".strip() if title else content
-        pdf_paths = _save_pdfs(pdfs) if pdfs else []
-        pdf_blobs = _collect_pdf_blobs(pdfs) if pdfs else []
-
-        out = _call_pre_pipeline_safe(
-            text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-            pdf_paths=pdf_paths, pdf_blobs=pdf_blobs
-        )
-
-        return AnalyzeResponse(
-            ok=True,
-            meta={
-                "title": title, "chars": len(text),
-                "pdf_count": len(pdf_blobs) if pdf_blobs else len(pdf_paths),
-                "pdf_paths": pdf_paths,
-                "denom_mode": denom_mode,
-                "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
-                "gate": gate,
-            },
-            result=PreResult(**out),
-        )
     except FileNotFoundError as e:
         return JSONResponse(status_code=500, content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)})
     except Exception as e:
@@ -376,19 +338,9 @@ async def analyze_and_mint_form(
     w_acc: float = Form(0.5),
     w_sinc: float = Form(0.5),
     gate: Optional[float] = Form(None),
-    pdfs: Optional[List[UploadFile]] = File(None),
     to_address: Optional[str] = Form(None),
 ):
     """멀티파트 업로드 → 분석 → 게이트 통과 시 **시뮬레이션 민팅**만 수행"""
-    try:
-        text = f"{title}\n\n{content}".strip() if title else content
-        pdf_blobs = _collect_pdf_blobs(pdfs)
-        gate_eff = float(gate if gate is not None else S_THRESHOLD)
-
-        out = _call_pre_pipeline_safe(
-            text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate_eff,
-            pdf_paths=[], pdf_blobs=pdf_blobs,
-        )
 
         S_pre = float(out.get("S_pre") or out.get("S_pre_ext") or 0.0)
         S_acc = out.get("S_acc") or out.get("S_fact")
@@ -405,7 +357,7 @@ async def analyze_and_mint_form(
             "mode": "simulated",
             "meta": {
                 "title": title, "chars": len(text),
-                "pdf_count": len(pdf_blobs), "denom_mode": denom_mode,
+                "denom_mode": denom_mode,
                 "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
             },
         }
@@ -432,7 +384,7 @@ async def analyze_and_mint(req: AnalyzeMintReq):
     gate = S_THRESHOLD
     res = _call_pre_pipeline_safe(
         text=req.text, denom_mode=req.denom_mode, w_acc=0.5, w_sinc=0.5,
-        gate=gate, pdf_paths=None,
+        gate=gate,
     )
 
     scores = {
