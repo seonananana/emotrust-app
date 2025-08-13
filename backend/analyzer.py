@@ -6,12 +6,8 @@ from typing import Dict, Any, Optional, List, Tuple
 import torch
 import torch.nn as nn
 from transformers import BertTokenizer, BertModel
-
 from pre_score import get_lexicon             # 진정성(사전 기반)
-from preproc_pii import (
-    moderate_then_preprocess,
-    log_moderation_event,
-)
+from preproc_pii import preprocess_text
 
 # ---------------------------
 # KoBERT 회귀 모델 정의
@@ -80,6 +76,10 @@ class PreSignals:
         self.s_acc = clamp01(self.s_acc)
         self.s_sinc = clamp01(self.s_sinc)
 
+from preproc_pii import preprocess_text
+
+# ...
+
 def pre_pipeline(
     text: str,
     denom_mode: str = "all",
@@ -92,27 +92,9 @@ def pre_pipeline(
     coverage_boost_max: float = 0.15,
 ) -> Dict[str, Any]:
 
-    action, clean_candidate, reasons = moderate_then_preprocess(text)
-
-    try:
-        log_moderation_event(action, reasons, clean_candidate)
-    except Exception:
-        pass
-
-    if action == "block":
-        return {
-            "pii_action": action, "pii_reasons": reasons,
-            "S_acc": 0.0, "S_sinc": 0.0, "S_pre": 0.0, "S_pre_ext": 0.0,
-            "S_pre_raw": 0.0, "gate_used": normalize_gate(gate),
-            "gate_used_raw": round(normalize_gate(gate) * 100, 1),
-            "gate_pass": False, "tokens": 0, "matched": 0, "total": 0,
-            "coverage": 0.0, "clean_text": "", "masked": False,
-            "S_fact": None, "need_evidence": False,
-            "claims": [], "evidence": {}
-        }
-
-    clean = clean_candidate
-    masked = (action == "allow_masked")
+    clean = preprocess_text(text)
+    masked = False
+    reasons = []
 
     # 진정성 계산
     lex = get_lexicon()
@@ -133,11 +115,15 @@ def pre_pipeline(
     except Exception:
         S_fact = None
 
+    # S_pre 계산
+    denom = max(1e-9, w_acc + w_sinc)
+    S_pre = (w_acc * clamp01(S_fact or 0.0) + w_sinc * S_sinc) / denom
+    S_pre_ext = S_pre
+
     gate_norm = normalize_gate(gate)
     gate_pass = bool(S_pre >= gate_norm)
 
     return {
-        "pii_action": action, "pii_reasons": reasons,
         "S_acc": clamp01(0.0 if S_fact is None else S_fact),
         "S_sinc": clamp01(S_sinc), "S_pre": clamp01(S_pre),
         "S_pre_ext": clamp01(S_pre_ext),
@@ -146,14 +132,12 @@ def pre_pipeline(
         "gate_pass": gate_pass, "tokens": int(total), "matched": int(matched),
         "total": int(total), "coverage": float(cov), "clean_text": clean,
         "masked": bool(masked), "S_fact": S_fact,
-        "need_evidence": False, "claims": [], "evidence": {}
+        "need_evidence": False, "claims": [], "evidence": {},
+        "pii_action": "allow", "pii_reasons": []  # 남겨도 무방 (빈 값)
     }
-
+    
 async def build_pre_signals(content: str, denom_mode: str = "all") -> PreSignals:
-    action, clean, _ = moderate_then_preprocess(content)
-    if action == "block":
-        return PreSignals(s_acc=0.0, s_sinc=0.0)
-
+    clean = preprocess_text(content)
     s_acc_proxy = 0.0
     S_sinc, _, _, _ = get_lexicon().sincerity(clean, mode=denom_mode)
     return PreSignals(s_acc=s_acc_proxy, s_sinc=S_sinc)
