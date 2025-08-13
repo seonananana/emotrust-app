@@ -707,97 +707,247 @@ async def get_post(post_id: int):
         if not obj:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
         return PostOut(
-            id=int(obj["id"]),
-            title=obj["title"],
-            content=obj["content"],
-            scores=obj["scores"],
-            weights=obj["weights"],
-            files=obj["files"],
-            meta=obj["meta"],
-            denom_mode=obj["denom_mode"],
-            gate=obj["gate"],
-            analysis_id=obj.get("analysis_id", ""),
-            created_at=obj.get("created_at", datetime.utcnow().isoformat() + "Z"),
-        )
-
-    # DB 모드
-    from sqlalchemy.orm import Session  # type: ignore
-    with SessionLocal() as db:  # type: ignore
-        obj = db.get(Post, post_id)  # type: ignore
-        if not obj:
-            raise HTTPException(status_code=404, detail="NOT_FOUND")
-        return PostOut(
-            id=obj.id,
-            title=obj.title,
-            content=obj.content,
-            scores=_from_json_str(obj.scores_json, {}),
-            weights=_from_json_str(obj.weights_json, {}),
-            files=_from_json_str(obj.files_json, {}),
-            meta=_from_json_str(obj.meta_json, {}),
-            denom_mode=obj.denom_mode,
-            gate=obj.gate,
-            analysis_id=obj.analysis_id or "",
-            created_at=(obj.created_at.isoformat() + "Z"),
-        )
-
-@app.get("/posts")
-async def list_posts(limit: int = 20, offset: int = 0):
-    if not USE_DB:
-        items_raw = _jsonl_list(limit=limit, offset=offset)
-        items = []
-        for obj in items_raw:
-            sc = obj.get("scores", {})
-            items.append(
-                {
-                    "id": int(obj["id"]),
-                    "title": obj["title"],
-                    "created_at": obj.get("created_at"),
-                    "S_pre": sc.get("S_pre"),
-                    "S_sinc": sc.get("S_sinc"),
-                    "S_acc": sc.get("S_acc") or sc.get("S_fact"),
-                    "gate": obj.get("gate"),
-                    "gate_pass": sc.get("gate_pass"),
-                    # minted 여부/정보는 상세(meta)에서 확인 가능. 필요하다면 여기도 풀어줄 수 있음.
-                }
-            )
-        return {"ok": True, "items": items, "count": len(items)}
-
-    # DB 모드
-    from sqlalchemy.orm import Session  # type: ignore
-    with SessionLocal() as db:  # type: ignore
-        q = db.query(Post).order_by(Post.id.desc()).offset(offset).limit(limit)  # type: ignore
-        items = []
-        for obj in q.all():
-            scores = _from_json_str(obj.scores_json, {})
-            items.append(
-                {
-                    "id": obj.id,
-                    "title": obj.title,
-                    "created_at": obj.created_at.isoformat() + "Z",
-                    "S_pre": scores.get("S_pre"),
-                    "S_sinc": scores.get("S_sinc"),
-                    "S_acc": scores.get("S_acc") or scores.get("S_fact"),
-                    "gate": obj.gate,
-                    "gate_pass": scores.get("gate_pass"),
-                }
-            )
-        return {"ok": True, "items": items, "count": len(items)}
-
-from fastapi.exceptions import RequestValidationError
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from fastapi.responses import JSONResponse
-from fastapi.requests import Request
-
-@app.exception_handler(StarletteHTTPException)
-async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={"ok": False, "error": "HTTP_ERROR", "detail": exc.detail},
-    )
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(
-        status_code=422,
-        content={"ok": False, "error": "VALIDATION_ERROR", "detail": str(exc)},
-    )
+            # 댓글 보너스 반영
++        sc = obj["scores"]; meta = obj["meta"]
++        meta = meta or {}
++        extras = _score_extras_with_comments(sc, meta)
++        meta["score_extras"] = extras
++        sc = {**sc, **extras}
++        return PostOut(
+             id=int(obj["id"]),
+             title=obj["title"],
+             content=obj["content"],
+-            scores=obj["scores"],
++            scores=sc,
+             weights=obj["weights"],
+             files=obj["files"],
+-            meta=obj["meta"],
++            meta=meta,
+             denom_mode=obj["denom_mode"],
+             gate=obj["gate"],
+             analysis_id=obj.get("analysis_id", ""),
+             created_at=obj.get("created_at", datetime.utcnow().isoformat() + "Z"),
+         )
+ 
+     # DB 모드
+     from sqlalchemy.orm import Session  # type: ignore
+     with SessionLocal() as db:  # type: ignore
+         obj = db.get(Post, post_id)  # type: ignore
+         if not obj:
+             raise HTTPException(status_code=404, detail="NOT_FOUND")
+-        return PostOut(
++        scores = _from_json_str(obj.scores_json, {})  # type: ignore
++        meta = _from_json_str(obj.meta_json, {})      # type: ignore
++        extras = _score_extras_with_comments(scores, meta)
++        meta["score_extras"] = extras
++        scores = {**scores, **extras}
++        return PostOut(
+             id=obj.id,
+             title=obj.title,
+             content=obj.content,
+-            scores=_from_json_str(obj.scores_json, {}),
++            scores=scores,
+             weights=_from_json_str(obj.weights_json, {}),
+             files=_from_json_str(obj.files_json, {}),
+-            meta=_from_json_str(obj.meta_json, {}),
++            meta=meta,
+             denom_mode=obj.denom_mode,
+             gate=obj.gate,
+             analysis_id=obj.analysis_id or "",
+             created_at=(obj.created_at.isoformat() + "Z"),
+         )
+ 
+@@
+ async def list_posts(limit: int = 20, offset: int = 0):
+     if not USE_DB:
+         items_raw = _jsonl_list(limit=limit, offset=offset)
+         items = []
+         for obj in items_raw:
+-            sc = obj.get("scores", {})
++            meta = obj.get("meta", {}) or {}
++            sc = obj.get("scores", {}) or {}
++            extras = _score_extras_with_comments(sc, meta)
+             items.append(
+                 {
+                     "id": int(obj["id"]),
+                     "title": obj["title"],
+                     "created_at": obj.get("created_at"),
+                     "S_pre": sc.get("S_pre"),
+                     "S_sinc": sc.get("S_sinc"),
+                     "S_acc": sc.get("S_acc") or sc.get("S_fact"),
+                     "gate": obj.get("gate"),
+                     "gate_pass": sc.get("gate_pass"),
++                    "S_effective": extras["S_effective"],
++                    "likes": (meta or {}).get("likes"),
+                     # minted 여부/정보는 상세(meta)에서 확인 가능. 필요하다면 여기도 풀어줄 수 있음.
+                 }
+             )
+         return {"ok": True, "items": items, "count": len(items)}
+ 
+@@
+         for obj in q.all():
+-            scores = _from_json_str(obj.scores_json, {})
++            scores = _from_json_str(obj.scores_json, {})
++            meta = _from_json_str(obj.meta_json, {})
++            extras = _score_extras_with_comments(scores, meta)
+             items.append(
+                 {
+                     "id": obj.id,
+                     "title": obj.title,
+                     "created_at": obj.created_at.isoformat() + "Z",
+                     "S_pre": scores.get("S_pre"),
+                     "S_sinc": scores.get("S_sinc"),
+                     "S_acc": scores.get("S_acc") or scores.get("S_fact"),
+                     "gate": obj.gate,
+                     "gate_pass": scores.get("gate_pass"),
++                    "S_effective": extras["S_effective"],
++                    "likes": (meta or {}).get("likes"),
+                 }
+             )
+         return {"ok": True, "items": items, "count": len(items)}
++
++# ─────────────────────────────────────────────────────────
++# 댓글 목록
++# ─────────────────────────────────────────────────────────
++@app.get("/posts/{post_id}/comments")
++async def list_comments(post_id: int):
++    if not USE_DB:
++        obj = _jsonl_get(post_id)
++        if not obj:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        meta = obj.get("meta") or {}
++        comments = meta.get("comments") or []
++        return {"ok": True, "items": comments}
++    else:
++        from sqlalchemy.orm import Session  # type: ignore
++        with SessionLocal() as db:  # type: ignore
++            o = db.get(Post, int(post_id))  # type: ignore
++            if not o:
++                raise HTTPException(status_code=404, detail="NOT_FOUND")
++            meta = _from_json_str(o.meta_json, {})  # type: ignore
++            comments = meta.get("comments") or []
++            return {"ok": True, "items": comments}
++
++# ─────────────────────────────────────────────────────────
++# 댓글 등록 (점수 보너스만 반영; 토큰 민팅 없음)
++# ─────────────────────────────────────────────────────────
++@app.post("/posts/{post_id}/comments")
++async def add_comment(post_id: int, c: CommentIn):
++    new_item = {
++        "id": int(datetime.utcnow().timestamp() * 1000),
++        "author": (c.author or "anon"),
++        "text": c.text.strip(),
++        "created_at": datetime.utcnow().isoformat() + "Z",
++    }
++    if not USE_DB:
++        obj = _jsonl_get(post_id)
++        if not obj:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        meta = (obj.get("meta") or {})
++        comments = meta.get("comments") or []
++        comments.append(new_item)
++        meta["comments"] = comments
++        # 댓글 보너스 재계산
++        scores_cur = obj.get("scores", {})
++        meta["score_extras"] = _score_extras_with_comments(scores_cur, meta)
++        _jsonl_update_post(int(post_id), {"meta": meta})
++        return {"ok": True, "item": new_item, "count": len(comments)}
++    else:
++        from sqlalchemy.orm import Session  # type: ignore
++        with SessionLocal() as db:  # type: ignore
++            o = db.get(Post, int(post_id))  # type: ignore
++            if not o:
++                raise HTTPException(status_code=404, detail="NOT_FOUND")
++            meta = _from_json_str(o.meta_json, {})  # type: ignore
++            comments = meta.get("comments") or []
++            comments.append(new_item)
++            meta["comments"] = comments
++            # 댓글 보너스 재계산
++            scores_cur = _from_json_str(o.scores_json, {})  # type: ignore
++            meta["score_extras"] = _score_extras_with_comments(scores_cur, meta)
++            o.meta_json = _to_json_str(meta)  # type: ignore
++            db.commit()
++            return {"ok": True, "item": new_item, "count": len(comments)}
++
++# ─────────────────────────────────────────────────────────
++# 좋아요(+선택적 공감 토큰 민팅; 점수 영향 없음)
++# ─────────────────────────────────────────────────────────
++@app.post("/posts/{post_id}/like", response_model=LikeOut)
++async def like_post(post_id: int, data: LikeIn = LikeIn()):
++    simulate = os.getenv("EMOTRUST_SIMULATE_CHAIN", "1") == "1"
++    like_mint_on = os.getenv("EMOTRUST_LIKE_MINT", "1") == "1"
++
++    def _resolve_addr(given: Optional[str]) -> Optional[str]:
++        if given:
++            return given
++        addr = os.getenv("PUBLIC_ADDRESS")
++        if addr:
++            return addr
++        pk = os.getenv("PRIVATE_KEY")
++        if pk:
++            try:
++                from web3 import Web3
++                return Web3().eth.account.from_key(pk).address
++            except Exception:
++                return None
++        return None
++
++    if not USE_DB:
++        obj = _jsonl_get(post_id)
++        if not obj:
++            raise HTTPException(status_code=404, detail="NOT_FOUND")
++        meta = obj.get("meta") or {}
++        likes = int(meta.get("likes") or 0) + 1
++        meta["likes"] = likes
++
++        minted = False
++        tx_hash = None
++        token_id = None
++
++        if like_mint_on and simulate:
++            to_addr = _resolve_addr(data.to_address)
++            if to_addr:
++                tx_hash, token_id = sim_mint(to_addr)  # 공감 토큰 시뮬
++                minted = True
++                mints = meta.get("like_mints") or []
++                mints.append({
++                    "addr": to_addr,
++                    "tx_hash": tx_hash,
++                    "token_id": token_id,
++                    "created_at": datetime.utcnow().isoformat() + "Z",
++                })
++                meta["like_mints"] = mints
++
++        _jsonl_update_post(int(post_id), {"meta": meta})
++        return LikeOut(ok=True, likes=likes, minted=minted, tx_hash=tx_hash, token_id=token_id)
++    else:
++        from sqlalchemy.orm import Session  # type: ignore
++        with SessionLocal() as db:  # type: ignore
++            o = db.get(Post, int(post_id))  # type: ignore
++            if not o:
++                raise HTTPException(status_code=404, detail="NOT_FOUND")
++            meta = _from_json_str(o.meta_json, {})  # type: ignore
++            likes = int(meta.get("likes") or 0) + 1
++            meta["likes"] = likes
++
++            minted = False
++            tx_hash = None
++            token_id = None
++
++            if like_mint_on and simulate:
++                to_addr = _resolve_addr(data.to_address)
++                if to_addr:
++                    tx_hash, token_id = sim_mint(to_addr)
++                    minted = True
++                    mints = meta.get("like_mints") or []
++                    mints.append({
++                        "addr": to_addr,
++                        "tx_hash": tx_hash,
++                        "token_id": token_id,
++                        "created_at": datetime.utcnow().isoformat() + "Z",
++                    })
++                    meta["like_mints"] = mints
++
++            o.meta_json = _to_json_str(meta)  # type: ignore
++            db.commit()
++            return LikeOut(ok=True, likes=likes, minted=minted, tx_hash=tx_hash, token_id=token_id)
