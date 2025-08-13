@@ -378,15 +378,16 @@ async def analyze_and_mint(req: AnalyzeMintReq):
 
 @app.post("/posts")
 async def create_post(p: PostIn):
-    # 게이트 미통과 저장 금지
+    # 게이트 미통과는 저장 금지(기존 정책 유지)
     if not p.scores.gate_pass:
         raise HTTPException(status_code=400, detail="GATE_NOT_PASSED")
 
+    # 1) 글 저장 (파일 모드/DB 모드 공통)
     if not USE_DB:
         obj = {
             "title": p.title.strip(),
             "content": p.content.strip(),
-            "scores": p.scores.model_dump(),
+            "scores": p.scores.model_dump() if hasattr(p.scores, "model_dump") else p.scores,
             "weights": p.weights,
             "files": p.files,
             "meta": p.meta or {},
@@ -395,27 +396,112 @@ async def create_post(p: PostIn):
             "analysis_id": p.analysis_id or "",
         }
         post_id = _jsonl_append(obj)
-        return {"ok": True, "post_id": post_id}
+        # 파일 모드에선 바로 쓰던 데이터로 진행
+        saved_title = obj["title"]
+        saved_content = obj["content"]
+        scores = obj["scores"]
+        meta_cur = obj["meta"]
+    else:
+        from sqlalchemy.orm import Session  # type: ignore
+        with SessionLocal() as db:  # type: ignore
+            o = Post(  # type: ignore
+                title=p.title.strip(),
+                content=p.content.strip(),
+                scores_json=_to_json_str(p.scores),
+                weights_json=_to_json_str(p.weights),
+                files_json=_to_json_str(p.files),
+                meta_json=_to_json_str(p.meta or {}),
+                denom_mode=p.denom_mode,
+                gate=p.gate,
+                analysis_id=p.analysis_id or "",
+            )
+            db.add(o)
+            db.commit()
+            db.refresh(o)
+            post_id = o.id
+            saved_title = o.title          # type: ignore
+            saved_content = o.content      # type: ignore
+            scores = _from_json_str(o.scores_json, {})   # type: ignore
+            meta_cur = _from_json_str(o.meta_json, {})   # type: ignore
 
-    # DB 모드
-    from sqlalchemy.orm import Session  # type: ignore
-    with SessionLocal() as db:  # type: ignore
-        obj = Post(  # type: ignore
-            title=p.title.strip(),
-            content=p.content.strip(),
-            scores_json=_to_json_str(p.scores),
-            weights_json=_to_json_str(p.weights),
-            files_json=_to_json_str(p.files),
-            meta_json=_to_json_str(p.meta or {}),
-            denom_mode=p.denom_mode,
-            gate=p.gate,
-            analysis_id=p.analysis_id or "",
-        )
-        db.add(obj)
-        db.commit()
-        db.refresh(obj)
-        return {"ok": True, "post_id": obj.id}
+    # 2) 자동 민팅 시도 (성공/실패와 무관하게 글은 이미 저장됨)
+    minted = False
+    token_id = None
+    tx_hash = None
+    explorer = None
+    mint_error = None
 
+    # AUTO_MINT 기본값: true (환경변수로 끌 수 있음)
+    AUTO_MINT = os.getenv("AUTO_MINT", "true").lower() in ("true", "1", "yes")
+    TOKENURI_TEXT_MAX = int(os.getenv("TOKENURI_TEXT_MAX", "1000"))
+
+    if AUTO_MINT:
+        try:
+            # analyzer 결과의 마스킹 텍스트가 meta에 들어왔다면 사용
+            masked_text = None
+            if isinstance(meta_cur, dict):
+                masked_text = meta_cur.get("masked_text") or meta_cur.get("clean_text")
+
+            # 토큰 메타 구성(인라인 빌더)
+            from hashlib import sha256
+            text_for_chain = (masked_text or saved_content or "")[:TOKENURI_TEXT_MAX]
+            meta_token = {
+                "name": "Empathy Post",
+                "description": "Masked text + scores recorded on-chain",
+                "text": text_for_chain,
+                "text_hash": f"sha256:{sha256((saved_content or '').encode('utf-8')).hexdigest()}",
+                "scores": {
+                    "S_acc": round(float(scores.get("S_acc") or scores.get("S_fact") or 0.0), 3),
+                    "S_sinc": round(float(scores.get("S_sinc") or 0.0), 3),
+                    "S_pre": round(float(scores.get("S_pre") or 0.0), 3),
+                },
+                "version": "v1",
+            }
+
+            to_addr = os.getenv("PUBLIC_ADDRESS")
+            if not to_addr:
+                raise RuntimeError("PUBLIC_ADDRESS not set")
+
+            # 실제 민팅
+            tx_hash = send_mint(to_addr, meta_token)
+            token_id, _ = wait_token_id(tx_hash)
+            minted = True
+            explorer = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+
+            # 3) 민팅 결과를 저장 데이터에 반영
+            if not USE_DB:
+                # JSONL은 append-업데이트 방식: 같은 id로 최신 상태를 다시 기록
+                updated = dict(obj)
+                updated["id"] = post_id
+                new_meta = dict(meta_cur or {})
+                new_meta["minted"] = True
+                new_meta["mint"] = {"token_id": token_id, "tx_hash": tx_hash, "explorer": explorer}
+                updated["meta"] = new_meta
+                _jsonl_append(updated)
+            else:
+                from sqlalchemy.orm import Session  # type: ignore
+                with SessionLocal() as db:  # type: ignore
+                    o = db.get(Post, int(post_id))  # type: ignore
+                    if o:
+                        m = _from_json_str(o.meta_json, {})
+                        m["minted"] = True
+                        m["mint"] = {"token_id": token_id, "tx_hash": tx_hash, "explorer": explorer}
+                        o.meta_json = _to_json_str(m)
+                        db.commit()
+
+        except Exception as e:
+            mint_error = str(e)  # 실패해도 글은 저장됐으므로 minted=False로 응답
+
+    return {
+        "ok": True,
+        "post_id": int(post_id),
+        "minted": minted,
+        "token_id": token_id,
+        "tx_hash": tx_hash,
+        "explorer": explorer,
+        "mint_error": mint_error,
+    }
+    
 @app.get("/posts/{post_id}", response_model=PostOut)
 async def get_post(post_id: int):
     if not USE_DB:
