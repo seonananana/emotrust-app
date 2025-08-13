@@ -4,8 +4,7 @@ import pandas as pd
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 from transformers import BertModel
-from kobert_tokenizer import KoBERTTokenizer
-from sklearn.preprocessing import LabelEncoder
+from kobert_transformers import get_tokenizer
 from tqdm import tqdm
 
 # ---------------------------
@@ -35,16 +34,16 @@ class FinanceDataset(Dataset):
         label_str = self.data.iloc[idx]['labels']
         label = self.label_map[label_str]
 
-        inputs = self.tokenizer.encode_plus(
+        encoded = self.tokenizer(
             text,
+            return_tensors='pt',
+            padding='max_length',
             truncation=True,
-            padding="max_length",
-            max_length=64,
-            return_tensors="pt"
+            max_length=64
         )
         return {
-            'input_ids': inputs['input_ids'].squeeze(0),
-            'attention_mask': inputs['attention_mask'].squeeze(0),
+            'input_ids': encoded['input_ids'].squeeze(0),
+            'attention_mask': encoded['attention_mask'].squeeze(0),
             'label': torch.tensor(label, dtype=torch.float)
         }
 
@@ -54,7 +53,7 @@ class FinanceDataset(Dataset):
 class KoBERTRegressor(nn.Module):
     def __init__(self):
         super(KoBERTRegressor, self).__init__()
-        self.bert = BertModel.from_pretrained('monologg/kobert')
+        self.bert = BertModel.from_pretrained("monologg/kobert")
         self.regressor = nn.Linear(self.bert.config.hidden_size, 1)
 
     def forward(self, input_ids, attention_mask):
@@ -68,14 +67,13 @@ class KoBERTRegressor(nn.Module):
 def train():
     df = pd.read_csv(CSV_PATH)
 
-    # 라벨 정규화
     label_map = {
         'negative': 0.0,
         'neutral': 0.5,
         'positive': 1.0
     }
 
-    tokenizer = KoBERTTokenizer.from_pretrained('skt/kobert-base-v1')
+    tokenizer = get_tokenizer()
     dataset = FinanceDataset(df, tokenizer, label_map)
     dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
@@ -100,7 +98,6 @@ def train():
             total_loss += loss.item()
         print(f"Epoch {epoch+1} Loss: {total_loss:.4f}")
 
-    # 저장
     torch.save(model.state_dict(), MODEL_PATH)
     print(f"✅ 모델 저장 완료 → {MODEL_PATH}")
 
@@ -108,24 +105,24 @@ def train():
 # 추론 함수
 # ---------------------------
 def predict_with_kobert(text: str) -> float:
-    tokenizer = KoBERTTokenizer.from_pretrained('skt/kobert-base-v1')
+    tokenizer = get_tokenizer()
     model = KoBERTRegressor().to(DEVICE)
     model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
 
-    inputs = tokenizer.encode_plus(
+    encoded = tokenizer(
         text,
+        return_tensors='pt',
+        padding='max_length',
         truncation=True,
-        padding="max_length",
-        max_length=64,
-        return_tensors="pt"
+        max_length=64
     )
-    input_ids = inputs['input_ids'].to(DEVICE)
-    attention_mask = inputs['attention_mask'].to(DEVICE)
+    input_ids = encoded['input_ids'].to(DEVICE)
+    attention_mask = encoded['attention_mask'].to(DEVICE)
 
     with torch.no_grad():
         score = model(input_ids, attention_mask).item()
-        return max(0.0, min(1.0, score))  # clamp between 0 and 1
+        return max(0.0, min(1.0, score))  # clamp
 
 # ---------------------------
 # 실행
