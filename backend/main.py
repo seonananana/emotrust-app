@@ -324,11 +324,11 @@ async def analyze(
     w_sinc: float = Form(0.5),
     gate: float = Form(0.70),
 ):
-    except FileNotFoundError as e:
-        return JSONResponse(status_code=500, content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)})
-    except Exception as e:
-        logger.exception("analyze failed")
-        return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
+except FileNotFoundError as e:
+    return JSONResponse(status_code=500, content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)})
+except Exception as e:
+    logger.exception("analyze failed")
+    return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
 
 @app.post("/analyze-and-mint")
 async def analyze_and_mint_form(
