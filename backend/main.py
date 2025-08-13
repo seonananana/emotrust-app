@@ -782,3 +782,22 @@ async def list_posts(limit: int = 20, offset: int = 0):
                 }
             )
         return {"ok": True, "items": items, "count": len(items)}
+
+from fastapi.exceptions import RequestValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from fastapi.responses import JSONResponse
+from fastapi.requests import Request
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"ok": False, "error": "HTTP_ERROR", "detail": exc.detail},
+    )
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=422,
+        content={"ok": False, "error": "VALIDATION_ERROR", "detail": str(exc)},
+    )
