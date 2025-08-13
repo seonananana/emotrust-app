@@ -207,4 +207,5 @@ async def build_pre_signals(content: str, denom_mode: str = "all") -> PreSignals
         return PreSignals(s_acc=0.0, s_sinc=0.0)
 
     s_acc_proxy = 0.0  # 중립값(정책에 따라 0.0 또는 0.5 가능)
-    S_sinc, _, _, _ = get_lexicon().sincerity(clean, mode=de_
+    S_sinc, _, _, _ = get_lexicon().sincerity(clean, mode=denom_mode)
+    return PreSignals(s_acc=s_acc_proxy, s_sinc=S_sinc)
