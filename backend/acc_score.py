@@ -3,6 +3,7 @@
 # - 주장 추출 → PDF 인덱싱 → 검색 → 유사도 평균으로 S_fact 산출
 # - PyMuPDF(있으면 우선), pypdf(폴백), pytesseract(텍스트 부족 시 OCR), sentence-transformers(임베딩)가 있으면 사용
 # - 없으면 BoW 코사인으로 폴백
+
 from __future__ import annotations
 
 import os
@@ -13,96 +14,11 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple, List, Any
 
-# =========================
-# 내부 유틸
-# =========================
-def clamp01(x) -> float:
-    try:
-        x = float(x)
-    except Exception:
-        return 0.0
-    return 0.0 if x < 0 else (1.0 if x > 1 else x)
-
-_WS_RE = re.compile(r'\s+')
-
-def _normalize_spaces(s: str) -> str:
-    if not s:
-        return ""
-    s = unicodedata.normalize("NFKC", s)
-    return _WS_RE.sub(" ", s).strip()
-
-_SENT_SPLIT_RE = re.compile(r'(?<=[\.\?\!])\s+|[\n\r]+|(?<=[가-힣\w\)])\s*[·\-–—]\s+')
-
-def _split_sentences(s: str) -> List[str]:
-    s = _normalize_spaces(s)
-    if not s:
-        return []
-    parts = [p.strip() for p in _SENT_SPLIT_RE.split(s) if p and len(p.strip()) > 1]
-    return parts
-
-def _dedupe_keep_order(xs: List[str]) -> List[str]:
-    seen = set()
-    out = []
-    for x in xs:
-        k = x.strip()
-        if k and k not in seen:
-            seen.add(k)
-            out.append(k)
-    return out
-
-def _tokenize_kor_en(s: str) -> List[str]:
-    s = _normalize_spaces(s.lower())
-    s = re.sub(r"[^0-9a-z가-힣]+", " ", s)
-    toks = [t for t in s.split() if t]
-    return toks
-
-def _chunk_text(s: str, chunk_chars: int = 600, overlap: int = 100) -> List[str]:
-    s = _normalize_spaces(s)
-    if not s:
-        return []
-    chunk_chars = max(1, int(chunk_chars))
-    overlap = max(0, int(overlap))
-    step = max(1, chunk_chars - overlap)
-    return [s[i:i + chunk_chars] for i in range(0, len(s), step)]
-
-# =========================
-# 선택 의존성
-# =========================
-_HAS_PYMUPDF = False
-_HAS_PYPDF = False
-_HAS_TESS = False
-_HAS_SBERT = False
-
-fitz = None
-PdfReader = None
-SentenceTransformer = None
-pytesseract = None
-Image = None
-
-try:
-    import fitz  # PyMuPDF
-    _HAS_PYMUPDF = True
-except Exception:
-    pass
-
-try:
-    from pypdf import PdfReader
-    _HAS_PYPDF = True
-except Exception:
-    pass
-
-try:
-    import pytesseract
-    from PIL import Image
-    _HAS_TESS = True
-except Exception:
-    pass
-
-try:
-    from sentence_transformers import SentenceTransformer
-    _HAS_SBERT = True
-except Exception:
-    pass
+# OCR 및 PDF 이미지 처리 추가
+import tempfile
+from pdf2image import convert_from_bytes
+import pytesseract
+from PIL import Image
 
 # =========================
 # 임베더
@@ -163,75 +79,125 @@ class EvidenceChunk:
     source: str
 
 # =========================
+# 내부 유틸
+# =========================
+def clamp01(x) -> float:
+    try:
+        x = float(x)
+    except Exception:
+        return 0.0
+    return 0.0 if x < 0 else (1.0 if x > 1 else x)
+
+_WS_RE = re.compile(r'\s+')
+
+def _normalize_spaces(s: str) -> str:
+    if not s:
+        return ""
+    s = unicodedata.normalize("NFKC", s)
+    return _WS_RE.sub(" ", s).strip()
+
+_SENT_SPLIT_RE = re.compile(r'(?<=[\.\?\!])\s+|[\n\r]+|(?<=[가-힣\w\)])\s*[\-\u2013\u2014]\s+')
+
+def _split_sentences(s: str) -> List[str]:
+    s = _normalize_spaces(s)
+    if not s:
+        return []
+    return [p.strip() for p in _SENT_SPLIT_RE.split(s) if p and len(p.strip()) > 1]
+
+def _dedupe_keep_order(xs: List[str]) -> List[str]:
+    seen = set()
+    out = []
+    for x in xs:
+        k = x.strip()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+def _tokenize_kor_en(s: str) -> List[str]:
+    s = _normalize_spaces(s.lower())
+    s = re.sub(r"[^0-9a-z가-힣]+", " ", s)
+    return [t for t in s.split() if t]
+
+def _chunk_text(s: str, chunk_chars: int = 600, overlap: int = 100) -> List[str]:
+    s = _normalize_spaces(s)
+    if not s:
+        return []
+    step = max(1, chunk_chars - overlap)
+    return [s[i:i + chunk_chars] for i in range(0, len(s), step)]
+
+# =========================
+# 선택 의존성
+# =========================
+try:
+    import fitz
+    _HAS_PYMUPDF = True
+except Exception:
+    fitz = None
+    _HAS_PYMUPDF = False
+
+try:
+    from pypdf import PdfReader
+    _HAS_PYPDF = True
+except Exception:
+    PdfReader = None
+    _HAS_PYPDF = False
+
+try:
+    from sentence_transformers import SentenceTransformer
+    _HAS_SBERT = True
+except Exception:
+    SentenceTransformer = None
+    _HAS_SBERT = False
+
+# =========================
+# OCR 처리 함수
+# =========================
+def extract_text_via_ocr(pdf_bytes: bytes) -> List[str]:
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=300)
+        texts = []
+        for i, img in enumerate(images):
+            page_text = pytesseract.image_to_string(img, lang='kor+eng')
+            texts.append(_normalize_spaces(page_text))
+        return texts
+    except Exception as e:
+        print(f"❌ OCR 변환 실패: {e}")
+        return []
+
+# =========================
 # PDF 텍스트 추출
 # =========================
 def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional[bytes] = None) -> List[str]:
     texts: List[str] = []
 
-    # ✅ 디버깅 로그: 어떤 PDF가 들어왔는지 출력
-    if pdf_bytes:
-        print(f"✅ PDF 바이트 길이: {len(pdf_bytes)}")
-    if path:
-        print(f"✅ PDF 경로: {path}")
-
-    # PyMuPDF 우선 사용
     if _HAS_PYMUPDF:
         try:
-            if pdf_bytes is not None:
-                try:
-                    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-                except Exception as e:
-                    print(f"❌ PyMuPDF로 PDF 열기 실패: {e}")
-                    return []
-            else:
-                assert path is not None, "path or pdf_bytes required"
-                doc = fitz.open(path)
-
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf") if pdf_bytes else fitz.open(path)
             for page in doc:
                 t = page.get_text("text") or ""
                 t = _normalize_spaces(t)
-
-                # OCR 처리 조건
-                if len(t) < 30 and _HAS_TESS:
-                    try:
-                        pix = page.get_pixmap(dpi=200)
-                        img_bytes = pix.tobytes("png")
-                        img = Image.open(io.BytesIO(img_bytes))
-                        lang = "kor+eng"
-                        t_ocr = pytesseract.image_to_string(img, lang=lang)
-                        t2 = _normalize_spaces(t_ocr)
-                        if len(t2) > len(t):
-                            t = t2
-                    except Exception as e:
-                        print(f"❌ OCR 실패: {e}")
-
                 texts.append(t)
-
             doc.close()
+            if all(len(t) < 30 for t in texts):
+                return extract_text_via_ocr(pdf_bytes)
             return texts
+        except Exception:
+            pass
 
-        except Exception as e:
-            print(f"❌ PyMuPDF 전체 실패: {e}")
-            pass  # fallback to pypdf
-
-    # fallback: pypdf
     if _HAS_PYPDF:
         try:
-            if pdf_bytes is not None:
-                reader = PdfReader(io.BytesIO(pdf_bytes))
-            else:
-                assert path is not None
-                reader = PdfReader(path)
+            reader = PdfReader(io.BytesIO(pdf_bytes)) if pdf_bytes else PdfReader(path)
             for p in reader.pages:
                 t = p.extract_text() or ""
                 texts.append(_normalize_spaces(t))
+            if all(len(t) < 30 for t in texts):
+                return extract_text_via_ocr(pdf_bytes)
             return texts
-        except Exception as e:
-            print(f"❌ pypdf 실패: {e}")
+        except Exception:
             pass
 
-    print("❌ PDF 텍스트 추출 실패. 빈 리스트 반환.")
-    return texts
+    return extract_text_via_ocr(pdf_bytes or b"")
 
 # =========================
 # PDF 인덱스
