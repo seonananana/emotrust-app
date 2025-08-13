@@ -48,10 +48,7 @@ export default function App() {
 
   const [backendURL, setBackendURL] = useState('');
   const [loading, setLoading] = useState(false);
-
-  // 파일 업로드(PDF) 상태
-  const [pdfs, setPdfs] = useState([]); // [{ uri, name, mimeType, size }...]
-
+  
   // 저장 상태
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState(null);
@@ -80,38 +77,6 @@ export default function App() {
   const canSubmit = useMemo(() => {
     return !!backendURL && !loading && title.trim().length > 0 && content.trim().length > 0;
   }, [backendURL, loading, title, content]);
-
-  const pickPDFs = async () => {
-    try {
-      const res = await DocumentPicker.getDocumentAsync({
-        type: 'application/pdf',
-        multiple: true,
-        copyToCacheDirectory: true,
-      });
-      if (res.canceled) return;
-
-      const assets = res.assets || [];
-      const next = [...pdfs];
-
-      assets.forEach((a) => {
-        if (!a?.uri) return;
-        if (next.find(x => x.uri === a.uri)) return;
-        next.push({
-          uri: a.uri,
-          name: a.name || `evidence_${Date.now()}.pdf`,
-          mimeType: a.mimeType || 'application/pdf',
-          size: a.size ?? 0,
-        });
-      });
-
-      setPdfs(next);
-    } catch (e) {
-      Alert.alert('파일 선택 오류', String(e));
-    }
-  };
-
-  const removePDF = (idx) => setPdfs((prev) => prev.filter((_, i) => i !== idx));
-  const clearPDFs = () => setPdfs([]);
 
   // ✅ 게이트 통과 시 저장(API: /posts) — 백엔드가 자동 민팅 수행
   const savePost = async ({ analysis, meta }) => {
@@ -209,14 +174,6 @@ export default function App() {
     formData.append('w_sinc', String(0.5));
     formData.append('gate', String(gate));
 
-    for (const f of pdfs) {
-      formData.append('pdfs', {
-        uri: f.uri,
-        name: f.name || 'evidence.pdf',
-        type: f.mimeType || 'application/pdf',
-      });
-    }
-
     try {
       const { ok, status, data, raw } = await fetchJSON(`${backendURL}/analyze`, {
         method: 'POST',
@@ -259,18 +216,6 @@ export default function App() {
     }
   };
 
-  const filesInfo = useMemo(() => {
-    const count = pdfs.length;
-    const totalBytes = pdfs.reduce((acc, f) => acc + (f.size || 0), 0);
-    return {
-      count,
-      sizeLabel:
-        totalBytes > 0
-          ? (totalBytes / (1024 * 1024)).toFixed(2) + ' MB'
-          : count > 0 ? '크기 미상' : '0',
-    };
-  }, [pdfs]);
-
   // ─────────────────────────────────────────────────────────────
   // 렌더
   // ─────────────────────────────────────────────────────────────
@@ -312,9 +257,6 @@ export default function App() {
             <Text selectable style={styles.debugText}>
               URL: {backendURL || '(없음)'}
             </Text>
-            <Text style={[styles.debugText, { marginTop: 6 }]}>
-              📎 PDFs: {filesInfo.count}개 ({filesInfo.sizeLabel})
-            </Text>
             <View style={{ marginTop: 8, flexDirection: 'row', gap: 8 }}>
               <Button title="Gate 0.70" onPress={() => setGate(0.70)} />
               <Button title="0.50" onPress={() => setGate(0.50)} />
@@ -343,27 +285,6 @@ export default function App() {
             placeholder="내용을 입력하세요"
             multiline
           />
-
-          {/* 파일 업로드 UI */}
-          <View style={{ marginTop: 12, gap: 8 }}>
-            <Button title="📎 PDF 첨부" onPress={pickPDFs} />
-            {pdfs.length > 0 && (
-              <View style={styles.filesBox}>
-                {pdfs.map((f, i) => (
-                  <View key={f.uri + i} style={styles.fileRow}>
-                    <Text numberOfLines={1} style={{ flex: 1 }}>
-                      {f.name || 'evidence.pdf'}
-                    </Text>
-                    <TouchableOpacity onPress={() => removePDF(i)} style={styles.removeBtn}>
-                      <Text style={{ color: '#b00020', fontWeight: '700' }}>삭제</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-                <View style={{ marginTop: 6 }}>
-                  <Button title="첨부 초기화" color="#64748b" onPress={clearPDFs} />
-                </View>
-              </View>
-            )}
           </View>
 
           <View style={{ marginTop: 16 }}>
