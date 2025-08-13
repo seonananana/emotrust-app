@@ -706,28 +706,27 @@ async def get_post(post_id: int):
         obj = _jsonl_get(post_id)
         if not obj:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
+               # 댓글 보너스 반영
+        sc = obj["scores"]
+        meta = obj["meta"]
+        meta = meta or {}
+        extras = _score_extras_with_comments(sc, meta)
+        meta["score_extras"] = extras
+        sc = {**sc, **extras}
+
         return PostOut(
-            # 댓글 보너스 반영
-+        sc = obj["scores"]; meta = obj["meta"]
-+        meta = meta or {}
-+        extras = _score_extras_with_comments(sc, meta)
-+        meta["score_extras"] = extras
-+        sc = {**sc, **extras}
-+        return PostOut(
-             id=int(obj["id"]),
-             title=obj["title"],
-             content=obj["content"],
--            scores=obj["scores"],
-+            scores=sc,
-             weights=obj["weights"],
-             files=obj["files"],
--            meta=obj["meta"],
-+            meta=meta,
-             denom_mode=obj["denom_mode"],
-             gate=obj["gate"],
-             analysis_id=obj.get("analysis_id", ""),
-             created_at=obj.get("created_at", datetime.utcnow().isoformat() + "Z"),
-         )
+            id=int(obj["id"]),
+            title=obj["title"],
+            content=obj["content"],
+            scores=sc,
+            weights=obj["weights"],
+            files=obj["files"],
+            meta=meta,
+            denom_mode=obj["denom_mode"],
+            gate=obj["gate"],
+            analysis_id=obj.get("analysis_id", ""),
+            created_at=obj.get("created_at", datetime.utcnow().isoformat() + "Z"),
+        )
  
      # DB 모드
      from sqlalchemy.orm import Session  # type: ignore
