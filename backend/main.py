@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hashlib import sha256
-
+from preproc_pii import preprocess_text
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
@@ -149,8 +149,6 @@ app.add_middleware(
 # 스키마
 # ────────────────────────────────────────────────────────────────────────────────
 class PreResult(BaseModel):
-    pii_action: str = "none"
-    pii_reasons: List[str] = []
     S_acc: float = Field(0.0, ge=0.0, le=1.0)
     S_sinc: float = Field(0.0, ge=0.0, le=1.0)
     S_pre: float = Field(0.0, ge=0.0, le=1.0)
