@@ -7,6 +7,10 @@ web3==6.17.0
 eth-account==0.10.0
 torch>=2.0.0
 transformers>=4.30.0
-
-kobert @ git+https://github.com/SKTBrain/KoBERT.git
-kobert-transformers @ git+https://github.com/NLP2K/kobert-transformers.git
+kobert-transformers==0.2.3
+kobert-tokenizer==0.5.1
+pandas>=1.3.0
+scikit-learn>=1.0.0
+sentencepiece==0.1.96
+numpy>=1.21.0
+pymupdf>=1.20.0
