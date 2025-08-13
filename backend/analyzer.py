@@ -153,55 +153,54 @@ def pre_pipeline(
         evidence = {}
 
     # ---- [5] 결합/게이트 ----
-gate_norm = normalize_gate(gate)
+    gate_norm = normalize_gate(gate)
 
-if S_fact is None:
-    # PDF 없음/검증 불가 → S_sinc만으로 계산
-    if isinstance(min_sinc_if_no_pdf, (int, float)):
-        # 바닥값 0.40 보장 + 사용자 최솟값 반영
-        S_sinc = max(S_sinc, 0.40)
-        S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf))
-    S_pre = (w_sinc * S_sinc) / max(1e-9, w_sinc)
-    S_pre_ext = S_pre
-else:
-    denom = max(1e-9, w_acc + w_sinc)
-    S_pre = (w_acc * clamp01(S_fact) + w_sinc * S_sinc) / denom
-    S_pre_ext = S_pre
+    if S_fact is None:
+        # PDF 없음/검증 불가 → S_sinc만으로 계산
+        if isinstance(min_sinc_if_no_pdf, (int, float)):
+            # 바닥값 0.40 보장 + 사용자 최솟값 반영
+            S_sinc = max(S_sinc, 0.40)
+            S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf))
+        S_pre = (w_sinc * S_sinc) / max(1e-9, w_sinc)
+        S_pre_ext = S_pre
+    else:
+        denom = max(1e-9, w_acc + w_sinc)
+        S_pre = (w_acc * clamp01(S_fact) + w_sinc * S_sinc) / denom
+        S_pre_ext = S_pre
 
-gate_pass = bool(S_pre >= gate_norm)
+    gate_pass = bool(S_pre >= gate_norm)
 
     # 하위호환 필드 주석:
     # - S_acc : 과거 '정확도' 키를 기대하는 소비자(프론트/DB)를 위해 유지. 의미는 S_fact 또는 0.0.
-return {
-    "pii_action": action, "pii_reasons": reasons,
-    "S_acc": clamp01(0.0 if S_fact is None else S_fact),  # 하위호환 이름
-    "S_sinc": clamp01(S_sinc),
-    "S_pre": clamp01(S_pre),
-    "S_pre_ext": clamp01(S_pre_ext),
+    return {
+        "pii_action": action, "pii_reasons": reasons,
+        "S_acc": clamp01(0.0 if S_fact is None else S_fact),  # 하위호환 이름
+        "S_sinc": clamp01(S_sinc),
+        "S_pre": clamp01(S_pre),
+        "S_pre_ext": clamp01(S_pre_ext),
 
-    # 보기용 원점수(0~100) 및 실제 사용한 게이트(둘 다 제공)
-    "S_pre_raw": round(clamp01(S_pre) * 100.0, 1),
-    "gate_used": gate_norm,
-    "gate_used_raw": round(gate_norm * 100.0, 1),
+        # 보기용 원점수(0~100) 및 실제 사용한 게이트(둘 다 제공)
+        "S_pre_raw": round(clamp01(S_pre) * 100.0, 1),
+        "gate_used": gate_norm,
+        "gate_used_raw": round(gate_norm * 100.0, 1),
 
-    "gate_pass": gate_pass,
+        "gate_pass": gate_pass,
 
-    # 토큰/커버리지
-    "tokens": int(total),        
-    "matched": int(matched),
-    "total": int(total),
-    "coverage": float(cov),
+        # 토큰/커버리지
+        "tokens": int(total),
+        "matched": int(matched),
+        "total": int(total),
+        "coverage": float(coverage),   # ← 만약 위에서 cov를 썼다면 여기서도 coverage로 통일
 
-    "clean_text": clean,
-    "masked": bool(masked),
+        "clean_text": clean_text,
+        "masked": bool(masked),
 
-    # B안 결과
-    "S_fact": None if S_fact is None else float(S_fact),
-    "need_evidence": bool(need_evidence),
-    "claims": claims,
-    "evidence": evidence,
-}
-
+        # B안 결과
+        "S_fact": None if S_fact is None else float(S_fact),
+        "need_evidence": bool(need_evidence),
+        "claims": claims,
+        "evidence": evidence,
+    }
 
 # =============================
 # 하위호환용 API (가능하면 pre_pipeline 직접 호출)
