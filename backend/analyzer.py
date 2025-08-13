@@ -85,7 +85,7 @@ def pre_pipeline(
     denom_mode: str = "all",
     w_acc: float = 0.5,
     w_sinc: float = 0.5,
-    gate: float = 0.70,
+    gate: float = 0.3,
     *,
     enable_coverage_boost: bool = True,
     coverage_boost_k: float = 0.7,
