@@ -14,57 +14,31 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel, Field
-
 from dotenv import load_dotenv
+
+# 시뮬레이션 체인 유틸 (실체 체인 없음)
 from simulate_chain import sim_mint, sim_balance_of
 
 # ────────────────────────────────────────────────────────────────────────────────
-# ENV 로드 (backend/.env → hardhat/.env 순서로)
+# ENV
 # ────────────────────────────────────────────────────────────────────────────────
-BASE = Path(__file__).resolve().parent  # backend/
-load_dotenv(BASE / ".env")
-load_dotenv(BASE.parent / "hardhat" / ".env", override=False)
+BASE = Path(__file__).resolve().parent
+load_dotenv(BASE / ".env")  # hardhat/.env 로드 제거
 
-# ────────────────────────────────────────────────────────────────────────────────
-# 로깅
-# ────────────────────────────────────────────────────────────────────────────────
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=getattr(logging, LOG_LEVEL, logging.INFO))
 logger = logging.getLogger("emotrust-backend")
 
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.7.0-sim"
 DB_PATH = os.getenv("DB_PATH", "emotrust.db")
-USE_DB = os.getenv("USE_DB", "true").lower() == "true"   # false면 파일(JSONL) 저장으로 대체
-
-# --- Auto-mint settings ---
-AUTO_MINT = os.getenv("AUTO_MINT", "true").lower() == "true"  # 기본: 자동 민팅 ON
+USE_DB = os.getenv("USE_DB", "true").lower() == "true"   # false → JSONL 저장
+AUTO_MINT = os.getenv("AUTO_MINT", "true").lower() == "true"
 TOKENURI_TEXT_MAX = int(os.getenv("TOKENURI_TEXT_MAX", "1000"))
-
-def _build_token_meta_from_post(
-    title: str,
-    content: str,
-    scores: Dict[str, Any],
-    masked_text: Optional[str] = None
-) -> Dict[str, Any]:
-    """
-    NFT 메타데이터 생성: 마스킹 텍스트가 있으면 사용, 없으면 본문 일부/해시만 기록.
-    """
-    text_for_chain = (masked_text or content or "")[:TOKENURI_TEXT_MAX]
-    return {
-        "name": "Empathy Post",
-        "description": "Masked text + scores recorded on-chain",
-        "text": text_for_chain,
-        "text_hash": f"sha256:{sha256((content or '').encode('utf-8')).hexdigest()}",
-        "scores": {
-            "S_acc": round(float(scores.get("S_acc") or scores.get("S_fact") or 0.0), 3),
-            "S_sinc": round(float(scores.get("S_sinc") or 0.0), 3),
-            "S_pre": round(float(scores.get("S_pre") or 0.0), 3),
-        },
-        "version": "v1",
-    }
+# S_THRESHOLD 우선, 없으면 GATE_THRESHOLD 백필
+S_THRESHOLD = float(os.getenv("S_THRESHOLD", os.getenv("GATE_THRESHOLD", "0.70")))
 
 # ────────────────────────────────────────────────────────────────────────────────
-# 파일(JSONL) 저장 유틸 (USE_DB=false일 때 사용)
+# 파일(JSONL) 저장 유틸 (USE_DB=false)
 # ────────────────────────────────────────────────────────────────────────────────
 POSTS_LOG_PATH = os.getenv("POSTS_LOG_PATH", "./data/posts.jsonl")
 
@@ -104,10 +78,6 @@ def _jsonl_list(limit: int, offset: int) -> List[Dict[str, Any]]:
     return items[offset: offset + limit]
 
 def _jsonl_update_post(post_id: int, patch: Dict[str, Any]) -> None:
-    """
-    posts.jsonl 전체를 읽어 해당 id를 찾아 병합 업데이트 후 파일을 덮어쓴다.
-    patch는 dict로 들어오며, 중첩 dict(meta 등)는 얕은 병합.
-    """
     rows = _jsonl_read_all()
     updated = False
     for i, row in enumerate(rows):
@@ -146,11 +116,10 @@ if USE_DB:
         title = Column(Text, nullable=False)
         content = Column(Text, nullable=False)
 
-        # JSON 문자열로 저장(유연성)
-        scores_json = Column(Text, nullable=False)      # {S_pre, S_sinc, S_acc, coverage, ...}
+        scores_json = Column(Text, nullable=False)      # {S_pre, S_sinc, S_acc, ...}
         weights_json = Column(Text, nullable=False)     # {w_acc, w_sinc}
         files_json = Column(Text, nullable=False)       # [{name,size}...] or []
-        meta_json = Column(Text, nullable=False)        # 프론트·분석 메타
+        meta_json = Column(Text, nullable=False)        # 프론트/분석 메타
 
         denom_mode = Column(String(20), default="all")
         gate = Column(Float, default=0.70)
@@ -178,7 +147,7 @@ app.add_middleware(
 # 스키마
 # ────────────────────────────────────────────────────────────────────────────────
 class PreResult(BaseModel):
-    pii_action: str
+    pii_action: str = "none"
     pii_reasons: List[str] = []
     S_acc: float = Field(0.0, ge=0.0, le=1.0)
     S_sinc: float = Field(0.0, ge=0.0, le=1.0)
@@ -190,7 +159,7 @@ class PreResult(BaseModel):
     coverage: float = Field(0.0, ge=0.0, le=1.0)
     clean_text: str = ""
     masked: bool = False
-    # 확장 필드
+    # 확장
     S_pre_ext: float = Field(0.0, ge=0.0, le=1.0)
     S_fact: Optional[float] = None
     need_evidence: bool = False
@@ -236,17 +205,19 @@ class PostOut(BaseModel):
     gate: float
     analysis_id: str
     created_at: str
-#-------------final 추가    
+
 class CommentIn(BaseModel):
-    comment: str = Field(..., description="댓글 내용")
+    author: Optional[str] = "anon"
+    text: str = Field(..., description="댓글 내용")
 
 class LikeIn(BaseModel):
-    public_address: str = Field(..., description="사용자 지갑 주소")
+    to_address: Optional[str] = Field(None, description="사용자 지갑 주소")
 
 class LikeOut(BaseModel):
     liked: bool
     token_id: Optional[int] = None
     tx_hash: Optional[str] = None
+
 class AnalyzeMintReq(BaseModel):
     text: str
     comments: int = 0
@@ -266,7 +237,6 @@ def _await_read_uploadfile(f: UploadFile) -> bytes:
             pass
 
 def _save_pdfs(pdfs: Optional[List[UploadFile]]) -> List[str]:
-    """업로드된 PDF들을 임시 폴더에 저장하고 파일 경로 리스트를 반환."""
     if not pdfs:
         return []
     saved_paths: List[str] = []
@@ -282,7 +252,6 @@ def _save_pdfs(pdfs: Optional[List[UploadFile]]) -> List[str]:
         saved_paths.append(str(dst))
     return saved_paths
 
-# 업로드 PDF를 (파일명, 바이트) 튜플 리스트로 수집
 def _collect_pdf_blobs(pdfs: Optional[List[UploadFile]]) -> List[Tuple[str, bytes]]:
     pdf_blobs: List[Tuple[str, bytes]] = []
     for f in (pdfs or []):
@@ -312,6 +281,42 @@ def _from_json_str(s: Optional[str], default):
     except Exception:
         return default
 
+def _build_token_meta_from_post(
+    title: str,
+    content: str,
+    scores: Dict[str, Any],
+    masked_text: Optional[str] = None
+) -> Dict[str, Any]:
+    text_for_chain = (masked_text or content or "")[:TOKENURI_TEXT_MAX]
+    return {
+        "name": "Empathy Post",
+        "description": "Masked text + scores recorded (simulated)",
+        "text": text_for_chain,
+        "text_hash": f"sha256:{sha256((content or '').encode('utf-8')).hexdigest()}",
+        "scores": {
+            "S_acc": round(float(scores.get("S_acc") or scores.get("S_fact") or 0.0), 3),
+            "S_sinc": round(float(scores.get("S_sinc") or 0.0), 3),
+            "S_pre": round(float(scores.get("S_pre") or 0.0), 3),
+        },
+        "version": "v1",
+        "mode": "simulated",
+    }
+
+def _score_extras_with_comments(scores: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    comments = (meta or {}).get("comments") or []
+    count = len(comments)
+    bonus = min(0.02 * max(0, count), 0.10)
+    try:
+        s_pre = float(scores.get("S_pre") or 0.0)
+    except Exception:
+        s_pre = 0.0
+    s_effective = max(0.0, min(1.0, s_pre + bonus))
+    return {
+        "comment_count": count,
+        "comment_bonus": round(bonus, 3),
+        "S_effective": round(s_effective, 3),
+    }
+
 def _call_pre_pipeline_safe(
     text: str,
     denom_mode: str,
@@ -321,46 +326,23 @@ def _call_pre_pipeline_safe(
     pdf_paths: Optional[List[str]],
     pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,
 ) -> Dict[str, Any]:
-    """
-    pre_pipeline 시그니처가 버전에 따라
-      - pdf_blobs / pdf_paths 둘 다 받거나
-      - 하나만 받거나
-      - 전혀 안 받을 수도 있어서
-    가장 풍부한 시도 → 단순 시도 순으로 호출한다.
-    """
+    # analyzer.pre_pipeline 을 다양한 시그니처로 시도
     from analyzer import pre_pipeline as _pre  # lazy import
-
-    # 1) (text, denom_mode, w_acc, w_sinc, gate, pdf_paths, pdf_blobs)
     try:
-        return _pre(
-            text=text, denom_mode=denom_mode,
-            w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-            pdf_paths=pdf_paths, pdf_blobs=pdf_blobs
-        )
+        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+                    pdf_paths=pdf_paths, pdf_blobs=pdf_blobs)
     except TypeError:
         pass
-
-    # 2) (text, denom_mode, w_acc, w_sinc, gate, pdf_blobs)
     try:
-        return _pre(
-            text=text, denom_mode=denom_mode,
-            w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-            pdf_blobs=pdf_blobs
-        )
+        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+                    pdf_blobs=pdf_blobs)
     except TypeError:
         pass
-
-    # 3) (text, denom_mode, w_acc, w_sinc, gate, pdf_paths)
     try:
-        return _pre(
-            text=text, denom_mode=denom_mode,
-            w_acc=w_acc, w_sinc=w_sinc, gate=gate,
-            pdf_paths=pdf_paths
-        )
+        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+                    pdf_paths=pdf_paths)
     except TypeError:
         pass
-
-    # 4) (text, denom_mode, w_acc, w_sinc, gate)
     return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate)
 
 # ────────────────────────────────────────────────────────────────────────────────
@@ -368,7 +350,7 @@ def _call_pre_pipeline_safe(
 # ────────────────────────────────────────────────────────────────────────────────
 @app.get("/", response_class=PlainTextResponse)
 def root():
-    return "Hello emotrust"
+    return "Hello emotrust (simulation-only)"
 
 @app.get("/health")
 async def health():
@@ -386,12 +368,8 @@ async def analyze(
 ):
     try:
         text = f"{title}\n\n{content}".strip() if title else content
-
-        # PDF 경로/바이트 수집
         pdf_paths = _save_pdfs(pdfs) if pdfs else []
         pdf_blobs = _collect_pdf_blobs(pdfs) if pdfs else []
-
-        print("🔥 Calling score_with_pdf with blobs:", pdf_blobs)  # 디버깅 로그
 
         out = _call_pre_pipeline_safe(
             text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
@@ -401,8 +379,7 @@ async def analyze(
         return AnalyzeResponse(
             ok=True,
             meta={
-                "title": title,
-                "chars": len(text),
+                "title": title, "chars": len(text),
                 "pdf_count": len(pdf_blobs) if pdf_blobs else len(pdf_paths),
                 "pdf_paths": pdf_paths,
                 "denom_mode": denom_mode,
@@ -416,8 +393,6 @@ async def analyze(
     except Exception as e:
         logger.exception("analyze failed")
         return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
-        # 👇 기존 analyze 아래에 추가 (main.py)
-S_THRESHOLD = float(os.getenv("S_THRESHOLD", "0.70"))
 
 @app.post("/analyze-and-mint")
 async def analyze_and_mint_form(
@@ -426,34 +401,21 @@ async def analyze_and_mint_form(
     denom_mode: str = Form("all"),
     w_acc: float = Form(0.5),
     w_sinc: float = Form(0.5),
-    gate: Optional[float] = Form(None),  # 개별 요청에서 오버라이드 가능
+    gate: Optional[float] = Form(None),
     pdfs: Optional[List[UploadFile]] = File(None),
-    to_address: Optional[str] = Form(None),  # 지정 안 하면 아래에서 자동 추론
+    to_address: Optional[str] = Form(None),
 ):
-    """
-    멀티파트 업로드 전용 엔드포인트:
-    - title/content + pdfs[] 업로드
-    - 분석 + 게이트 판단
-    - 통과 시 시뮬 민팅(simulate_chain)
-    """
+    """멀티파트 업로드 → 분석 → 게이트 통과 시 **시뮬레이션 민팅**만 수행"""
     try:
-        # 1) 텍스트/파일 수집
         text = f"{title}\n\n{content}".strip() if title else content
-        pdf_blobs = _collect_pdf_blobs(pdfs)  # (filename, bytes) 리스트
-
-        # 2) 분석 파이프라인 호출 (기존 analyze와 동일 방식)
+        pdf_blobs = _collect_pdf_blobs(pdfs)
         gate_eff = float(gate if gate is not None else S_THRESHOLD)
+
         out = _call_pre_pipeline_safe(
-            text=text,
-            denom_mode=denom_mode,
-            w_acc=w_acc,
-            w_sinc=w_sinc,
-            gate=gate_eff,
-            pdf_paths=[],          # 경로 저장 안 씀
-            pdf_blobs=pdf_blobs,   # 핵심
+            text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate_eff,
+            pdf_paths=[], pdf_blobs=pdf_blobs,
         )
 
-        # 3) 점수/게이트
         S_pre = float(out.get("S_pre") or out.get("S_pre_ext") or 0.0)
         S_acc = out.get("S_acc") or out.get("S_fact")
         S_sinc = out.get("S_sinc")
@@ -466,47 +428,25 @@ async def analyze_and_mint_form(
             "gate_pass": passed,
             "minted": False,
             "evidence": out.get("evidence"),
+            "mode": "simulated",
             "meta": {
-                "title": title,
-                "chars": len(text),
-                "pdf_count": len(pdf_blobs),
-                "denom_mode": denom_mode,
+                "title": title, "chars": len(text),
+                "pdf_count": len(pdf_blobs), "denom_mode": denom_mode,
                 "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
             },
         }
 
         if not passed:
-            return resp  # 게이트 미통과 → 민팅 스킵
-
-        # 4) 민팅 대상 주소 결정 (PUBLIC_ADDRESS → PRIVATE_KEY 유도 → 폼 입력)
-        addr = to_address or os.getenv("PUBLIC_ADDRESS")
-        if not addr:
-            pk = os.getenv("PRIVATE_KEY")
-            if pk:
-                try:
-                    from web3 import Web3
-                    addr = Web3().eth.account.from_key(pk).address
-                except Exception:
-                    addr = None
-
-        # 5) 시뮬/실체인 분기 (기본은 시뮬)
-        simulate = os.getenv("EMOTRUST_SIMULATE_CHAIN", "1") == "1"
-        if simulate:
-            if not addr:
-                # 시뮬이라도 수령 주소가 없으면 더미로 진행 가능하게 처리(선호: 주소 요구)
-                # 여기서는 명시적으로 주소 필요로 할게
-                return JSONResponse(status_code=400, content={"ok": False, "detail": "to_address가 필요합니다."})
-            tx_hash, token_id = sim_mint(addr)
-            resp.update({"minted": True, "tx_hash": tx_hash, "tokenId": token_id, "mode": "simulated"})
             return resp
 
-        # 실체인 (운영 전환 시)
+        # 주소 결정 (web3 미사용)
+        addr = to_address or os.getenv("PUBLIC_ADDRESS")
         if not addr:
-            return JSONResponse(status_code=400, content={"ok": False, "detail": "to_address가 필요합니다."})
-        from mint.mint import send_mint, wait_token_id  # lazy import
-        tx_hash = send_mint(addr, _build_token_meta_from_post(title, content, {"S_acc": S_acc, "S_sinc": S_sinc, "S_pre": S_pre}))
-        token_id, _ = wait_token_id(tx_hash)
-        resp.update({"minted": True, "tx_hash": tx_hash, "tokenId": token_id, "mode": "onchain"})
+            return JSONResponse(status_code=400, content={"ok": False, "detail": "to_address 또는 PUBLIC_ADDRESS가 필요합니다."})
+
+        # 시뮬 민팅
+        tx_hash, token_id = sim_mint(addr)
+        resp.update({"minted": True, "tx_hash": tx_hash, "tokenId": token_id})
         return resp
 
     except Exception as e:
@@ -515,14 +455,10 @@ async def analyze_and_mint_form(
 
 @app.post("/analyze-mint")
 async def analyze_and_mint(req: AnalyzeMintReq):
-    gate = float(os.getenv("GATE_THRESHOLD", "0.70"))
+    gate = S_THRESHOLD
     res = _call_pre_pipeline_safe(
-        text=req.text,
-        denom_mode=req.denom_mode,
-        w_acc=0.5,
-        w_sinc=0.5,
-        gate=gate,
-        pdf_paths=None,
+        text=req.text, denom_mode=req.denom_mode, w_acc=0.5, w_sinc=0.5,
+        gate=gate, pdf_paths=None,
     )
 
     scores = {
@@ -532,7 +468,7 @@ async def analyze_and_mint(req: AnalyzeMintReq):
         "gate_pass": res.get("gate_pass", False),
     }
 
-    # 토큰 보너스 적용(시뮬 모드도 동일)
+    # 토큰 보너스(시뮬 밸런스 사용)
     try:
         if req.to_address:
             per = float(os.getenv("NFT_BONUS_PER_TOKEN", "0.02"))
@@ -549,55 +485,72 @@ async def analyze_and_mint(req: AnalyzeMintReq):
         scores["S_final"] = scores["S_pre"]
 
     if not res.get("gate_pass"):
-        return {
-            "ok": True,
-            "minted": False,
-            "scores": scores,
-            "detail": "Gate not passed; mint skipped",
-        }
+        return {"ok": True, "minted": False, "scores": scores, "detail": "Gate not passed; mint skipped"}
 
-    # --- 시뮬 모드 분기 ---
-    if os.getenv("EMOTRUST_SIMULATE_CHAIN", "0") == "1":
-        if not req.to_address:
-            return {"minted": False, "detail": "user_address(to_address)가 필요합니다."}
-        tx_hash, token_id = sim_mint(req.to_address)
-        return {
-            "minted": True,
-            "tx_hash": tx_hash,
-            "token_id": token_id,
-            "scores": scores,
-        }
+    # 주소 필수
+    addr = req.to_address or os.getenv("PUBLIC_ADDRESS")
+    if not addr:
+        raise HTTPException(status_code=400, detail="to_address 또는 PUBLIC_ADDRESS가 필요합니다.")
 
-    # --- 실제 민팅 (EMOTRUST_DISABLE_MINT=0 && EMOTRUST_SIMULATE_CHAIN=0) ---
-    from mint.mint import send_mint, wait_token_id  # lazy import (운영 전환 시)
-    if not req.to_address:
-        raise HTTPException(status_code=400, detail="to_address가 필요합니다.")
-    m1 = send_mint(req.to_address)
-    m2 = wait_token_id(m1.tx_hash)
-    return {
-        "minted": True,
-        "tx_hash": m1.tx_hash,
-        "token_id": m2.token_id,
-        "scores": scores,
-    }
-#--------------수정
-@app.get("/posts", response_model=List[PostOut])
-def list_posts(limit: int = 100, offset: int = 0):
-    if USE_SQL:
-        stmt = select(posts_table).limit(limit).offset(offset)
-        rows = conn.execute(stmt).fetchall()
-        return [PostOut(**dict(r)) for r in rows]
+    tx_hash, token_id = sim_mint(addr)
+    return {"minted": True, "tx_hash": tx_hash, "token_id": token_id, "scores": scores, "mode": "simulated"}
+
+# ────────────────────────────────────────────────────────────────────────────────
+# Posts
+# ────────────────────────────────────────────────────────────────────────────────
+@app.get("/posts")
+def list_posts(limit: int = 20, offset: int = 0):
+    """
+    목록 요약: id, title, created_at, S_pre, S_sinc, S_acc, gate, gate_pass, S_effective, likes
+    """
+    if not USE_DB:
+        items_raw = _jsonl_list(limit=limit, offset=offset)
+        items = []
+        for obj in items_raw:
+            sc = obj.get("scores", {}) or {}
+            meta = obj.get("meta", {}) or {}
+            extras = _score_extras_with_comments(sc, meta)
+            items.append({
+                "id": int(obj["id"]),
+                "title": obj["title"],
+                "created_at": obj.get("created_at"),
+                "S_pre": sc.get("S_pre"),
+                "S_sinc": sc.get("S_sinc"),
+                "S_acc": sc.get("S_acc") or sc.get("S_fact"),
+                "gate": obj.get("gate"),
+                "gate_pass": sc.get("gate_pass"),
+                "S_effective": extras["S_effective"],
+                "likes": (meta or {}).get("likes"),
+            })
+        return {"ok": True, "items": items, "count": len(items)}
     else:
-        with open(POSTS_JSON, "r", encoding="utf-8") as f:
-            posts = json.load(f)
-        return posts[-limit:]
+        from sqlalchemy.orm import Session  # type: ignore
+        with SessionLocal() as db:  # type: ignore
+            q = db.query(Post).order_by(Post.created_at.desc()).offset(offset).limit(limit)  # type: ignore
+            items: List[Dict[str, Any]] = []
+            for obj in q.all():  # type: ignore
+                scores = _from_json_str(obj.scores_json, {})  # type: ignore
+                meta = _from_json_str(obj.meta_json, {})      # type: ignore
+                extras = _score_extras_with_comments(scores, meta)
+                items.append({
+                    "id": obj.id,
+                    "title": obj.title,
+                    "created_at": obj.created_at.isoformat() + "Z",
+                    "S_pre": scores.get("S_pre"),
+                    "S_sinc": scores.get("S_sinc"),
+                    "S_acc": scores.get("S_acc") or scores.get("S_fact"),
+                    "gate": obj.gate,
+                    "gate_pass": scores.get("gate_pass"),
+                    "S_effective": extras.get("S_effective"),
+                    "likes": meta.get("likes") if meta else None,
+                })
+            return {"ok": True, "items": items, "count": len(items)}
+
 @app.post("/posts")
 async def create_post(p: PostIn):
-    # 게이트 미통과는 저장 금지(기존 정책 유지)
     if not p.scores.gate_pass:
         raise HTTPException(status_code=400, detail="GATE_NOT_PASSED")
 
-    # 1) 글 저장 (파일 모드/DB 모드 공통)
     if not USE_DB:
         obj = {
             "title": p.title.strip(),
@@ -611,7 +564,6 @@ async def create_post(p: PostIn):
             "analysis_id": p.analysis_id or "",
         }
         post_id = _jsonl_append(obj)
-        # 파일 모드에선 바로 쓰던 데이터로 진행
         saved_title = obj["title"]
         saved_content = obj["content"]
         scores = obj["scores"]
@@ -630,71 +582,41 @@ async def create_post(p: PostIn):
                 gate=p.gate,
                 analysis_id=p.analysis_id or "",
             )
-            db.add(o)
-            db.commit()
-            db.refresh(o)
+            db.add(o); db.commit(); db.refresh(o)
             post_id = o.id
             saved_title = o.title          # type: ignore
             saved_content = o.content      # type: ignore
             scores = _from_json_str(o.scores_json, {})   # type: ignore
             meta_cur = _from_json_str(o.meta_json, {})   # type: ignore
 
-    # 2) 자동 민팅 시도 (성공/실패와 무관하게 글은 이미 저장됨)
-    minted = False
-    token_id = None
-    tx_hash = None
-    explorer = None
-    mint_error = None
-
+    # 자동 시뮬 민팅 (실패해도 글은 저장됨)
+    minted = False; token_id = None; tx_hash = None; mint_error = None
     if AUTO_MINT:
         try:
-            # analyzer 결과의 마스킹 텍스트가 meta에 들어왔다면 사용
             masked_text = None
             if isinstance(meta_cur, dict):
                 masked_text = meta_cur.get("masked_text") or meta_cur.get("clean_text")
 
-            # 토큰 메타 구성
             meta_token = _build_token_meta_from_post(
                 saved_title, saved_content,
-                {
-                    "S_acc": scores.get("S_acc") or scores.get("S_fact"),
-                    "S_sinc": scores.get("S_sinc"),
-                    "S_pre": scores.get("S_pre"),
-                },
+                {"S_acc": scores.get("S_acc") or scores.get("S_fact"),
+                 "S_sinc": scores.get("S_sinc"),
+                 "S_pre": scores.get("S_pre")},
                 masked_text=masked_text,
             )
 
-            # 수령 주소: PUBLIC_ADDRESS > PRIVATE_KEY 파생
             to_addr = os.getenv("PUBLIC_ADDRESS")
-            if not to_addr:
-                pk = os.getenv("PRIVATE_KEY")
-                if pk:
-                    from web3 import Web3
-                    to_addr = Web3().eth.account.from_key(pk).address
             if not to_addr:
                 raise RuntimeError("PUBLIC_ADDRESS not set")
 
-            # --- B안: 시뮬 민팅 분기 ---
-            if os.getenv("EMOTRUST_SIMULATE_CHAIN", "0") == "1":
-                tx_hash, token_id = sim_mint(to_addr)
-                minted = True
-                explorer = None  # 시뮬이므로 익스플로러 링크 없음
-            else:
-                # 실제 민팅 (운영 전환 시)
-                from mint.mint import send_mint, wait_token_id  # lazy import
-                tx_hash = send_mint(to_addr, meta_token)
-                token_id, _ = wait_token_id(tx_hash)
-                minted = True
-                explorer = f"https://sepolia.etherscan.io/tx/{tx_hash}"
+            tx_hash, token_id = sim_mint(to_addr)
+            minted = True
 
-            # 3) 민팅 결과를 저장 데이터에 반영
+            # 저장된 메타에 민팅 결과 기록
             if not USE_DB:
                 _jsonl_update_post(int(post_id), {
-                    "meta": {
-                        **(meta_cur or {}),
-                        "minted": True,
-                        "mint": {"token_id": token_id, "tx_hash": tx_hash, "explorer": explorer},
-                    }
+                    "meta": {**(meta_cur or {}), "minted": True,
+                             "mint": {"token_id": token_id, "tx_hash": tx_hash, "mode": "simulated"}}
                 })
             else:
                 from sqlalchemy.orm import Session  # type: ignore
@@ -703,25 +625,14 @@ async def create_post(p: PostIn):
                     if o:
                         m = _from_json_str(o.meta_json, {})
                         m["minted"] = True
-                        m["mint"] = {"token_id": token_id, "tx_hash": tx_hash, "explorer": explorer}
+                        m["mint"] = {"token_id": token_id, "tx_hash": tx_hash, "mode": "simulated"}
                         o.meta_json = _to_json_str(m)
                         db.commit()
-
         except Exception as e:
-            mint_error = str(e)  # 실패해도 글은 저장됐으므로 minted=False로 응답
+            mint_error = str(e)
 
-    return {
-        "ok": True,
-        "post_id": int(post_id),
-        "minted": minted,
-        "token_id": token_id,
-        "tx_hash": tx_hash,
-        "explorer": explorer,
-        "mint_error": mint_error,
-    }
-
-# main.py
-# -*- coding: utf-8 -*-
+    return {"ok": True, "post_id": int(post_id), "minted": minted,
+            "token_id": token_id, "tx_hash": tx_hash, "mint_error": mint_error}
 
 @app.get("/posts/{post_id}", response_model=PostOut)
 async def get_post(post_id: int):
@@ -729,106 +640,40 @@ async def get_post(post_id: int):
         obj = _jsonl_get(post_id)
         if not obj:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
-        # 댓글 보너스 반영
-        sc = obj["scores"]
-        meta = obj["meta"]
-        meta = meta or {}
+        sc = obj["scores"]; meta = obj.get("meta") or {}
         extras = _score_extras_with_comments(sc, meta)
         meta["score_extras"] = extras
         sc = {**sc, **extras}
-
         return PostOut(
-            id=int(obj["id"]),
-            title=obj["title"],
-            content=obj["content"],
-            scores=sc,
-            weights=obj["weights"],
-            files=obj["files"],
-            meta=meta,
-            denom_mode=obj["denom_mode"],
-            gate=obj["gate"],
+            id=int(obj["id"]), title=obj["title"], content=obj["content"],
+            scores=sc, weights=obj["weights"], files=obj["files"], meta=meta,
+            denom_mode=obj["denom_mode"], gate=obj["gate"],
             analysis_id=obj.get("analysis_id", ""),
             created_at=obj.get("created_at", datetime.utcnow().isoformat() + "Z"),
         )
+    else:
+        from sqlalchemy.orm import Session  # type: ignore
+        with SessionLocal() as db:  # type: ignore
+            obj = db.get(Post, post_id)  # type: ignore
+            if not obj:
+                raise HTTPException(status_code=404, detail="NOT_FOUND")
+            scores = _from_json_str(obj.scores_json, {})  # type: ignore
+            meta = _from_json_str(obj.meta_json, {})      # type: ignore
+            extras = _score_extras_with_comments(scores, meta)
+            meta["score_extras"] = extras
+            scores = {**scores, **extras}
+            return PostOut(
+                id=obj.id, title=obj.title, content=obj.content, scores=scores,
+                weights=_from_json_str(obj.weights_json, {}),
+                files=_from_json_str(obj.files_json, {}), meta=meta,
+                denom_mode=obj.denom_mode, gate=obj.gate,
+                analysis_id=obj.analysis_id or "",
+                created_at=(obj.created_at.isoformat() + "Z"),
+            )
 
-    # DB 모드
-    from sqlalchemy.orm import Session  # type: ignore
-    with SessionLocal() as db:  # type: ignore
-        obj = db.get(Post, post_id)  # type: ignore
-        if not obj:
-            raise HTTPException(status_code=404, detail="NOT_FOUND")
-
-        scores = _from_json_str(obj.scores_json, {})  # type: ignore
-        meta = _from_json_str(obj.meta_json, {})      # type: ignore
-        extras = _score_extras_with_comments(scores, meta)
-        meta["score_extras"] = extras
-        scores = {**scores, **extras}
-
-        return PostOut(
-            id=obj.id,
-            title=obj.title,
-            content=obj.content,
-            scores=scores,
-            weights=_from_json_str(obj.weights_json, {}),
-            files=_from_json_str(obj.files_json, {}),
-            meta=meta,
-            denom_mode=obj.denom_mode,
-            gate=obj.gate,
-            analysis_id=obj.analysis_id or "",
-            created_at=(obj.created_at.isoformat() + "Z"),
-        )
-
-async def list_posts(limit: int = 20, offset: int = 0):
-     if not USE_DB:
-         items_raw = _jsonl_list(limit=limit, offset=offset)
-         items = []
-         for obj in items_raw:
-             sc = obj.get("scores", {})
-             meta = obj.get("meta", {}) or {}
-             sc = obj.get("scores", {}) or {}
-             extras = _score_extras_with_comments(sc, meta)
-             items.append(
-                 {
-                     "id": int(obj["id"]),
-                     "title": obj["title"],
-                     "created_at": obj.get("created_at"),
-                     "S_pre": sc.get("S_pre"),
-                     "S_sinc": sc.get("S_sinc"),
-                     "S_acc": sc.get("S_acc") or sc.get("S_fact"),
-                     "gate": obj.get("gate"),
-                     "gate_pass": sc.get("gate_pass"),
-                     "S_effective": extras["S_effective"],
-                     "likes": (meta or {}).get("likes"),
-                     # minted 여부/정보는 상세(meta)에서 확인 가능. 필요하다면 여기도 풀어줄 수 있음.
-                 }
-             )
-         return {"ok": True, "items": items, "count": len(items)}
-
-for obj in q.all():
-    scores = _from_json_str(obj.scores_json, {})
-    meta = _from_json_str(obj.meta_json, {})
-    extras = _score_extras_with_comments(scores, meta)
-    
-    items.append(
-        {
-            "id": obj.id,
-            "title": obj.title,
-            "created_at": obj.created_at.isoformat() + "Z",
-            "S_pre": scores.get("S_pre"),
-            "S_sinc": scores.get("S_sinc"),
-            "S_acc": scores.get("S_acc") or scores.get("S_fact"),
-            "gate": obj.gate,
-            "gate_pass": scores.get("gate_pass"),
-            "S_effective": extras.get("S_effective"),
-            "likes": meta.get("likes") if meta else None,
-        }
-    )
-
-return {"ok": True, "items": items, "count": len(items)}
-
-# ─────────────────────────────────────────────────────────
-# 댓글 목록
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+# Comments
+# ────────────────────────────────────────────────────────────────────────────────
 @app.get("/posts/{post_id}/comments")
 async def list_comments(post_id: int):
     if not USE_DB:
@@ -848,9 +693,6 @@ async def list_comments(post_id: int):
             comments = meta.get("comments") or []
             return {"ok": True, "items": comments}
 
-# ─────────────────────────────────────────────────────────
-# 댓글 등록 (점수 보너스만 반영; 토큰 민팅 없음)
-# ─────────────────────────────────────────────────────────
 @app.post("/posts/{post_id}/comments")
 async def add_comment(post_id: int, c: CommentIn):
     new_item = {
@@ -867,7 +709,6 @@ async def add_comment(post_id: int, c: CommentIn):
         comments = meta.get("comments") or []
         comments.append(new_item)
         meta["comments"] = comments
-        # 댓글 보너스 재계산
         scores_cur = obj.get("scores", {})
         meta["score_extras"] = _score_extras_with_comments(scores_cur, meta)
         _jsonl_update_post(int(post_id), {"meta": meta})
@@ -882,49 +723,21 @@ async def add_comment(post_id: int, c: CommentIn):
             comments = meta.get("comments") or []
             comments.append(new_item)
             meta["comments"] = comments
-            # 댓글 보너스 재계산
             scores_cur = _from_json_str(o.scores_json, {})  # type: ignore
             meta["score_extras"] = _score_extras_with_comments(scores_cur, meta)
             o.meta_json = _to_json_str(meta)  # type: ignore
             db.commit()
             return {"ok": True, "item": new_item, "count": len(comments)}
-# ─────────────────────────────────────────────────────────────
-# ✅ (4) 댓글 기반 점수 부여 함수
-# 댓글 수에 따라 0.02 * N 점수 부여 (최대 0.1점)
-# ─────────────────────────────────────────────────────────────
-def _score_extras_with_comments(post_id: int) -> float:
-    if USE_SQL:
-        stmt = select(comments_table).where(comments_table.c.post_id == post_id)
-        rows = conn.execute(stmt).fetchall()
-        count = len(rows)
-    else:
-        with open(COMMENTS_JSON, "r", encoding="utf-8") as f:
-            all_comments = json.load(f)
-        count = sum(1 for c in all_comments if c["post_id"] == post_id)
-    return min(count * 0.02, 0.1)
 
-# ─────────────────────────────────────────────────────────
-# 좋아요(+선택적 공감 토큰 민팅; 점수 영향 없음)
-# ─────────────────────────────────────────────────────────
+# ────────────────────────────────────────────────────────────────────────────────
+# Likes (공감) + 시뮬 토큰
+# ────────────────────────────────────────────────────────────────────────────────
 @app.post("/posts/{post_id}/like", response_model=LikeOut)
-async def like_post(post_id: int, data: LikeIn = LikeIn()):
-    simulate = os.getenv("EMOTRUST_SIMULATE_CHAIN", "1") == "1"
-    like_mint_on = os.getenv("EMOTRUST_LIKE_MINT", "1") == "1"
-
+async def like_post(post_id: int, data: LikeIn):
     def _resolve_addr(given: Optional[str]) -> Optional[str]:
         if given:
             return given
-        addr = os.getenv("PUBLIC_ADDRESS")
-        if addr:
-            return addr
-        pk = os.getenv("PRIVATE_KEY")
-        if pk:
-            try:
-                from web3 import Web3
-                return Web3().eth.account.from_key(pk).address
-            except Exception:
-                return None
-        return None
+        return os.getenv("PUBLIC_ADDRESS")
 
     if not USE_DB:
         obj = _jsonl_get(post_id)
@@ -934,26 +747,21 @@ async def like_post(post_id: int, data: LikeIn = LikeIn()):
         likes = int(meta.get("likes") or 0) + 1
         meta["likes"] = likes
 
-        minted = False
         tx_hash = None
         token_id = None
 
-        if like_mint_on and simulate:
-            to_addr = _resolve_addr(data.to_address)
-            if to_addr:
-                tx_hash, token_id = sim_mint(to_addr)  # 공감 토큰 시뮬
-                minted = True
-                mints = meta.get("like_mints") or []
-                mints.append({
-                    "addr": to_addr,
-                    "tx_hash": tx_hash,
-                    "token_id": token_id,
-                    "created_at": datetime.utcnow().isoformat() + "Z",
-                })
-                meta["like_mints"] = mints
+        to_addr = _resolve_addr(data.to_address)
+        if to_addr:
+            tx_hash, token_id = sim_mint(to_addr)  # 공감 토큰 시뮬
+            mints = meta.get("like_mints") or []
+            mints.append({
+                "addr": to_addr, "tx_hash": tx_hash, "token_id": token_id,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+            })
+            meta["like_mints"] = mints
 
         _jsonl_update_post(int(post_id), {"meta": meta})
-        return LikeOut(ok=True, likes=likes, minted=minted, tx_hash=tx_hash, token_id=token_id)
+        return LikeOut(liked=True, token_id=token_id, tx_hash=tx_hash)
     else:
         from sqlalchemy.orm import Session  # type: ignore
         with SessionLocal() as db:  # type: ignore
@@ -964,24 +772,19 @@ async def like_post(post_id: int, data: LikeIn = LikeIn()):
             likes = int(meta.get("likes") or 0) + 1
             meta["likes"] = likes
 
-            minted = False
             tx_hash = None
             token_id = None
 
-            if like_mint_on and simulate:
-                to_addr = _resolve_addr(data.to_address)
-                if to_addr:
-                    tx_hash, token_id = sim_mint(to_addr)
-                    minted = True
-                    mints = meta.get("like_mints") or []
-                    mints.append({
-                        "addr": to_addr,
-                        "tx_hash": tx_hash,
-                        "token_id": token_id,
-                        "created_at": datetime.utcnow().isoformat() + "Z",
-                    })
-                    meta["like_mints"] = mints
+            to_addr = _resolve_addr(data.to_address)
+            if to_addr:
+                tx_hash, token_id = sim_mint(to_addr)
+                mints = meta.get("like_mints") or []
+                mints.append({
+                    "addr": to_addr, "tx_hash": tx_hash, "token_id": token_id,
+                    "created_at": datetime.utcnow().isoformat() + "Z",
+                })
+                meta["like_mints"] = mints
 
             o.meta_json = _to_json_str(meta)  # type: ignore
             db.commit()
-            return LikeOut(ok=True, likes=likes, minted=minted, tx_hash=tx_hash, token_id=token_id)
+            return LikeOut(liked=True, token_id=token_id, tx_hash=tx_hash)
