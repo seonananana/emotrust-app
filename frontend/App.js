@@ -381,7 +381,7 @@ export default function App() {
                 {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
               </Text>
               <Text>
-                팩트(S_fact): {result.result.S_fact == null
+                정확성(S_fact): {result.result.S_fact == null
                   ? '검증 불가'
                   : `${(result.result.S_fact * 100).toFixed(1)}점 / 100 (정규화 ${result.result.S_fact.toFixed(3)})`}
               </Text>
