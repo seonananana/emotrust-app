@@ -87,12 +87,9 @@ def pre_pipeline(
     w_sinc: float = 0.5,
     gate: float = 0.70,
     *,
-    pdf_paths: Optional[List[str]] = None,
-    pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,
     enable_coverage_boost: bool = True,
     coverage_boost_k: float = 0.7,
     coverage_boost_max: float = 0.15,
-    min_sinc_if_no_pdf: Optional[float] = 0.40,
 ) -> Dict[str, Any]:
 
     action, clean_candidate, reasons = moderate_then_preprocess(text)
@@ -137,17 +134,6 @@ def pre_pipeline(
         S_fact = None
 
     gate_norm = normalize_gate(gate)
-
-    if S_fact is None:
-        if isinstance(min_sinc_if_no_pdf, (int, float)):
-            S_sinc = max(S_sinc, clamp01(min_sinc_if_no_pdf), 0.40)
-        S_pre = S_sinc
-        S_pre_ext = S_pre
-    else:
-        denom = max(1e-9, w_acc + w_sinc)
-        S_pre = (w_acc * clamp01(S_fact) + w_sinc * S_sinc) / denom
-        S_pre_ext = S_pre
-
     gate_pass = bool(S_pre >= gate_norm)
 
     return {
