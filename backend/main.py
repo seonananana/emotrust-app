@@ -464,7 +464,7 @@ async def analyze_and_mint(req: AnalyzeMintReq):
 @app.get("/posts")
 def list_posts(limit: int = 20, offset: int = 0):
     """
-    목록 요약: id, title, created_at, S_pre, S_sinc, S_acc, gate, gate_pass, S_effective, likes
+    목록 요약: id, title, content, created_at, S_pre, S_sinc, S_acc, gate, gate_pass, S_effective, likes
     """
     if not USE_DB:
         items_raw = _jsonl_list(limit=limit, offset=offset)
@@ -475,8 +475,8 @@ def list_posts(limit: int = 20, offset: int = 0):
             extras = _score_extras_with_comments(sc, meta)
             items.append({
                 "id": int(obj["id"]),
-                "title": obj["title"],
-                "content": getattr(post, "content", None),
+                "title": obj.get("title"),
+                "content": obj.get("content"),  # ✅ 수정된 부분
                 "created_at": obj.get("created_at"),
                 "S_pre": sc.get("S_pre"),
                 "S_sinc": sc.get("S_sinc"),
@@ -484,9 +484,10 @@ def list_posts(limit: int = 20, offset: int = 0):
                 "gate": obj.get("gate"),
                 "gate_pass": sc.get("gate_pass"),
                 "S_effective": extras["S_effective"],
-                "likes": (meta or {}).get("likes"),
+                "likes": meta.get("likes") if meta else None,
             })
         return {"ok": True, "items": items, "count": len(items)}
+
     else:
         from sqlalchemy.orm import Session  # type: ignore
         with SessionLocal() as db:  # type: ignore
@@ -499,6 +500,7 @@ def list_posts(limit: int = 20, offset: int = 0):
                 items.append({
                     "id": obj.id,
                     "title": obj.title,
+                    "content": obj.content,  # ✅ DB 모드도 포함
                     "created_at": obj.created_at.isoformat() + "Z",
                     "S_pre": scores.get("S_pre"),
                     "S_sinc": scores.get("S_sinc"),
@@ -509,7 +511,7 @@ def list_posts(limit: int = 20, offset: int = 0):
                     "likes": meta.get("likes") if meta else None,
                 })
             return {"ok": True, "items": items, "count": len(items)}
-
+            
 @app.post("/posts")
 async def create_post(p: PostIn):
     if not p.scores.gate_pass:
