@@ -170,6 +170,10 @@ def pre_pipeline(
 
     gate_pass = bool(S_pre >= gate_norm)
 
+        # --- ensure coverage / clean_text exist (표준화) ---
+    coverage = float(locals().get('coverage', locals().get('cov', 0.0)))
+    clean_text = locals().get('clean_text', locals().get('clean', ''))
+    
     # 하위호환 필드 주석:
     # - S_acc : 과거 '정확도' 키를 기대하는 소비자(프론트/DB)를 위해 유지. 의미는 S_fact 또는 0.0.
     return {
