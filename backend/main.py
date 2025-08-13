@@ -356,16 +356,16 @@ async def analyze(
             content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)},
         )
 
-    @app.post("/analyze-and-mint")
-    async def analyze_and_mint_form(
-        title: str = Form(""),
-        content: str = Form(...),
-        denom_mode: str = Form("all"),
-        w_acc: float = Form(0.5),
-        w_sinc: float = Form(0.5),
-        gate: Optional[float] = Form(None),
-        to_address: Optional[str] = Form(None),
-    ):
+@app.post("/analyze-and-mint")
+async def analyze_and_mint_form(
+    title: str = Form(""),
+    content: str = Form(...),
+    denom_mode: str = Form("all"),
+    w_acc: float = Form(0.5),
+    w_sinc: float = Form(0.5),
+    gate: Optional[float] = Form(None),
+    to_address: Optional[str] = Form(None),
+):
     try:
         gate_eff = float(gate if gate is not None else S_THRESHOLD)
         text = f"{title}\n\n{content}".strip()
@@ -392,8 +392,7 @@ async def analyze(
             "evidence": out.get("evidence"),
             "mode": "simulated",
             "meta": {
-                "title": title,
-                "chars": len(text),
+                "title": title, "chars": len(text),
                 "denom_mode": denom_mode,
                 "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
             },
