@@ -1,4 +1,3 @@
-
 # acc_score.py
 # PDF 기반 정확성(팩트) 스코어러
 # - 주장 추출 → PDF 인덱싱 → 검색 → 유사도 평균으로 S_fact 산출
@@ -52,15 +51,12 @@ def _dedupe_keep_order(xs: List[str]) -> List[str]:
     return out
 
 def _tokenize_kor_en(s: str) -> List[str]:
-    # 간단 토크나이저: 한글/영문/숫자 기준
     s = _normalize_spaces(s.lower())
-    # 한글/영문/숫자 외에는 공백으로
     s = re.sub(r"[^0-9a-z가-힣]+", " ", s)
     toks = [t for t in s.split() if t]
     return toks
 
 def _chunk_text(s: str, chunk_chars: int = 600, overlap: int = 100) -> List[str]:
-    """문자열을 길이 chunk_chars로 겹치게(overlap) 잘라 반환"""
     s = _normalize_spaces(s)
     if not s:
         return []
@@ -123,12 +119,10 @@ class SimpleEmbedder:
                 self.backend = None
                 self.uses_sbert = False
 
-    # BoW 전용 내부 벡터
     def _bow_vec(self, s: str) -> Dict[str, float]:
         toks = _tokenize_kor_en(s)
         if not toks:
             return {}
-        # tf / sqrt(len)
         d: Dict[str, float] = {}
         for t in toks:
             d[t] = d.get(t, 0.0) + 1.0
@@ -155,7 +149,6 @@ class SimpleEmbedder:
 
     def cosine(self, a, b) -> float:
         if self.backend is not None:
-            # a, b are numpy arrays (unit-normalized)
             return float((a * b).sum())
         return self._bow_cos(a, b)
 
@@ -173,13 +166,8 @@ class EvidenceChunk:
 # PDF 텍스트 추출
 # =========================
 def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional[bytes] = None) -> List[str]:
-    """
-    각 페이지의 텍스트를 리스트로 반환.
-    우선순위: PyMuPDF → pypdf. PyMuPDF 사용 시 텍스트가 매우 적으면 OCR 시도.
-    """
     texts: List[str] = []
 
-    # PyMuPDF 경로
     if _HAS_PYMUPDF:
         try:
             if pdf_bytes is not None:
@@ -190,7 +178,6 @@ def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional
             for page in doc:
                 t = page.get_text("text") or ""
                 t = _normalize_spaces(t)
-                # 텍스트가 지나치게 적으면 OCR 시도
                 if len(t) < 30 and _HAS_TESS:
                     try:
                         pix = page.get_pixmap(dpi=200)
@@ -207,16 +194,14 @@ def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional
             doc.close()
             return texts
         except Exception:
-            # fall through to pypdf
             pass
 
-    # pypdf 폴백
     if _HAS_PYPDF:
         try:
             if pdf_bytes is not None:
                 reader = PdfReader(io.BytesIO(pdf_bytes))
             else:
-                assert path is not None, "path or pdf_bytes required"
+                assert path is not None
                 reader = PdfReader(path)
             for p in reader.pages:
                 t = p.extract_text() or ""
@@ -225,7 +210,6 @@ def _extract_page_texts_from_pdf(path: Optional[str] = None, pdf_bytes: Optional
         except Exception:
             pass
 
-    # 둘 다 실패하면 빈 리스트
     return texts
 
 # =========================
@@ -240,14 +224,12 @@ class PDFIndex:
         self._chunk_embeds = None
 
     def load_pdfs(
-        self, 
-        pdf_paths: Optional[List[str]] = None, 
-        pdf_blobs: Optional[List[Tuple[str, bytes]]] = None  # (파일명, 바이트)
+        self,
+        pdf_paths: Optional[List[str]] = None,
+        pdf_blobs: Optional[List[Tuple[str, bytes]]] = None
     ) -> None:
-        """경로 및 메모리 바이트 입력을 모두 지원"""
         chunks: List[EvidenceChunk] = []
 
-        # 1) 경로 기반
         for path in (pdf_paths or []):
             if not path or not os.path.exists(path):
                 continue
@@ -258,7 +240,6 @@ class PDFIndex:
                     if c:
                         chunks.append(EvidenceChunk(text=c, page=pno, sim=0.0, source=base))
 
-        # 2) 메모리(바이트) 기반
         for name, blob in (pdf_blobs or []):
             texts = _extract_page_texts_from_pdf(pdf_bytes=blob)
             base = name or "uploaded.pdf"
@@ -268,9 +249,7 @@ class PDFIndex:
                         chunks.append(EvidenceChunk(text=c, page=pno, sim=0.0, source=base))
 
         self.chunks = chunks
-
-    def build(self) -> None:
-        """청크 임베딩 미리 계산"""
+            def build(self) -> None:
         if not self.chunks:
             self._chunk_embeds = []
             return
@@ -278,7 +257,6 @@ class PDFIndex:
         self._chunk_embeds = self.embedder.encode(texts)
 
     def search(self, query: str, k: int = 5) -> List[EvidenceChunk]:
-        """쿼리와 가장 유사한 청크 상위 k개 반환 (심플 코사인)"""
         if not self.chunks:
             return []
         if self._chunk_embeds is None:
@@ -289,19 +267,15 @@ class PDFIndex:
             sim = self.embedder.cosine(q_embed, emb)
             scored.append((sim, ch))
         scored.sort(key=lambda x: x[0], reverse=True)
-        out = []
-        for sim, ch in scored[:max(1, k)]:
-            out.append(EvidenceChunk(text=ch.text, page=ch.page, sim=float(sim), source=ch.source))
-        return out
+        return [
+            EvidenceChunk(text=ch.text, page=ch.page, sim=float(sim), source=ch.source)
+            for sim, ch in scored[:max(1, k)]
+        ]
 
 # =========================
 # 주장 추출
 # =========================
 def extract_claims(clean_text: str, max_claims: int = 3) -> List[str]:
-    """
-    입력 텍스트에서 주요 주장(문장) 추출 (간이 버전)
-    - 문장 단위로 분할 → 너무 짧은 문장 제외 → 앞쪽에서 max_claims개
-    """
     sents = _split_sentences(clean_text or "")
     sents = [s for s in sents if len(s) >= 8]
     sents = _dedupe_keep_order(sents)
@@ -313,9 +287,6 @@ def extract_claims(clean_text: str, max_claims: int = 3) -> List[str]:
 # 스코어링
 # =========================
 def _score_claim_with_evidence(claim: str, idx: PDFIndex, topk: int = 5) -> Tuple[float, List[EvidenceChunk]]:
-    """
-    한 개 주장에 대해 PDFIndex에서 topk 증거를 찾고 최고 유사도를 반환
-    """
     evids = idx.search(claim, k=topk) if idx else []
     best = max((e.sim for e in evids), default=0.0)
     return float(best), evids
@@ -328,24 +299,12 @@ def score_with_pdf(
     chunk_chars: int = 600,
     overlap: int = 100,
 ) -> Dict[str, Any]:
-    """
-    clean_text에서 주장문을 추출 → PDF에서 증거 검색 → 정확성 점수 산출
-    반환:
-      {
-        "S_fact": 0~1 또는 None,
-        "need_evidence": bool,
-        "claims": [str, ...],
-        "evidence": {claim: [{"text":..., "page":..., "sim":..., "source":...}, ...], ...},
-        "meta": {...}
-      }
-    """
     idx = PDFIndex(chunk_chars=chunk_chars, overlap=overlap)
     idx.load_pdfs(pdf_paths=pdf_paths, pdf_blobs=pdf_blobs)
 
     claims = extract_claims(clean_text, max_claims=3)
 
     if not idx.chunks:
-        # 증거가 하나도 없으면 S_fact는 None, 증거 필요 플래그 ON
         return {
             "S_fact": None,
             "need_evidence": True if claims else False,
@@ -365,7 +324,7 @@ def score_with_pdf(
 
     for claim in claims:
         best, evs = _score_claim_with_evidence(claim, idx, topk=topk)
-        per_claim_scores.append(best)
+        per_claim_scores.append(best if best > 0 else 0.01)  # 👈 S_acc 0 방지
         evidence_map[claim] = [
             {"text": e.text, "page": e.page, "sim": float(e.sim), "source": e.source}
             for e in evs
