@@ -64,7 +64,7 @@ class KoBERTRegressor(nn.Module):
 # 학습 함수
 # ---------------------------
 def train():
-    df = pd.read_csv(CSV_PATH)
+    df = pd.read_csv(CSV_PATH, encoding="cp949")  # 또는 encoding="euc-kr"
 
     label_map = {
         'negative': 0.0,
