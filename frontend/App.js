@@ -256,9 +256,7 @@ export default function App() {
               URL: {backendURL || '(없음)'}
             </Text>
             <View style={{ marginTop: 8, flexDirection: 'row', gap: 8 }}>
-              <Button title="Gate 0.70" onPress={() => setGate(0.70)} />
-              <Button title="0.50" onPress={() => setGate(0.50)} />
-              <Button title="0.12" onPress={() => setGate(0.12)} />
+              <Button title="Gate 0.3" onPress={() => setGate(0.3)} />
             </View>
             <Text style={{ color: '#475569', marginTop: 4 }}>
               현재 Gate(정규화): {gate}
