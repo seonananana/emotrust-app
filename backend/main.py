@@ -35,6 +35,34 @@ APP_VERSION = "1.4.0"
 DB_PATH = os.getenv("DB_PATH", "emotrust.db")
 USE_DB = os.getenv("USE_DB", "true").lower() == "true"   # false면 파일(JSONL) 저장으로 대체
 
+# --- Auto-mint settings ---
+AUTO_MINT = os.getenv("AUTO_MINT", "true").lower() == "true"  # 기본: 자동 민팅 ON
+TOKENURI_TEXT_MAX = int(os.getenv("TOKENURI_TEXT_MAX", "1000"))
+
+def _build_token_meta_from_post(
+    title: str,
+    content: str,
+    scores: Dict[str, Any],
+    masked_text: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    NFT 메타데이터 생성: 마스킹 텍스트가 있으면 사용, 없으면 본문 일부/해시만 기록.
+    """
+    from hashlib import sha256
+    text_for_chain = (masked_text or content or "")[:TOKENURI_TEXT_MAX]
+    return {
+        "name": "Empathy Post",
+        "description": "Masked text + scores recorded on-chain",
+        "text": text_for_chain,
+        "text_hash": f"sha256:{sha256((content or '').encode('utf-8')).hexdigest()}",
+        "scores": {
+            "S_acc": round(float(scores.get("S_acc") or scores.get("S_fact") or 0.0), 3),
+            "S_sinc": round(float(scores.get("S_sinc") or 0.0), 3),
+            "S_pre": round(float(scores.get("S_pre") or 0.0), 3),
+        },
+        "version": "v1",
+    }
+
 # ────────────────────────────────────────────────────────────────────────────────
 # 선택: 파일(JSONL) 저장 유틸 (USE_DB=false일 때 사용)
 # ────────────────────────────────────────────────────────────────────────────────
