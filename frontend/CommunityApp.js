@@ -40,9 +40,18 @@ function PostCard({ p, onOpen }) {
   return (
     <TouchableOpacity style={s.card} onPress={onOpen} activeOpacity={0.85}>
       <Text style={s.title}>#{p.id} · {p.title || '(제목 없음)'}</Text>
+
+      {/* ✅ 내용(본문) 추가 */}
+      {p.content && (
+        <Text style={s.content} numberOfLines={2}>
+          {p.content}
+        </Text>
+      )}
+
       <Text style={s.meta}>
         Gate: {p.gate ?? '-'} · 통과: {String(p.gate_pass ?? p.scores?.gate_pass ?? false)} · 좋아요: {p.likes ?? p.meta?.likes ?? 0}
       </Text>
+
       {minted ? (
         <Text style={s.minted}>✅ minted (token_id: {tokenId ?? '-'})</Text>
       ) : (
