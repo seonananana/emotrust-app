@@ -1,6 +1,5 @@
 # analyzer.py  — B안 전용: PDF 팩트체크 + 사전 진정성
 from __future__ import annotations
-
 import os
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Tuple
