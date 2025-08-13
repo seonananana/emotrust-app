@@ -16,7 +16,7 @@ from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from dotenv import load_dotenv
-
+from simulate_chain import sim_mint, sim_balance_of
 # ────────────────────────────────────────────────────────────────────────────────
 # ENV 로드 (backend/.env → hardhat/.env 순서로)
 # ────────────────────────────────────────────────────────────────────────────────
@@ -407,12 +407,68 @@ async def analyze(
 
 @app.post("/analyze-mint")
 async def analyze_and_mint(req: AnalyzeMintReq):
-    # 1) 분석 + 게이트
     gate = float(os.getenv("GATE_THRESHOLD", "0.70"))
     res = _call_pre_pipeline_safe(
-        text=req.text, denom_mode=req.denom_mode, w_acc=0.5, w_sinc=0.5, gate=gate, pdf_paths=None
+        text=req.text,
+        denom_mode=req.denom_mode,
+        w_acc=0.5,
+        w_sinc=0.5,
+        gate=gate,
+        pdf_paths=None,
     )
 
+    scores = {
+        "S_acc": res.get("S_acc", 0.0),
+        "S_sinc": res.get("S_sinc", 0.0),
+        "S_pre": res.get("S_pre", 0.0),
+        "gate_pass": res.get("gate_pass", False),
+    }
+
+    # 토큰 보너스 적용(시뮬 모드도 동일)
+    try:
+        if req.to_address:
+            per = float(os.getenv("NFT_BONUS_PER_TOKEN", "0.02"))
+            cap = float(os.getenv("NFT_BONUS_CAP", "0.10"))
+            bal = sim_balance_of(req.to_address)
+            bonus = min(cap, per * max(0, bal))
+            scores["token_bonus"] = bonus
+            scores["S_final"] = max(0.0, min(1.0, scores["S_pre"] + bonus))
+        else:
+            scores["token_bonus"] = 0.0
+            scores["S_final"] = scores["S_pre"]
+    except Exception:
+        scores["token_bonus"] = 0.0
+        scores["S_final"] = scores["S_pre"]
+
+    if not res.get("gate_pass"):
+        return {
+            "ok": True,
+            "minted": False,
+            "scores": scores,
+            "detail": "Gate not passed; mint skipped",
+        }
+
+    # --- 시뮬 모드 분기 ---
+    if os.getenv("EMOTRUST_SIMULATE_CHAIN", "0") == "1":
+        if not req.to_address:
+            return {"minted": False, "detail": "user_address(to_address)가 필요합니다."}
+        tx_hash, token_id = sim_mint(req.to_address)
+        return {
+            "minted": True,
+            "tx_hash": tx_hash,
+            "token_id": token_id,
+            "scores": scores,
+        }
+
+    # --- 실제 민팅 (EMOTRUST_DISABLE_MINT=0 && SIMULATE_CHAIN=0) ---
+    m1 = send_mint(req.to_address)
+    m2 = wait_token_id(m1.tx_hash)
+    return {
+        "minted": True,
+        "tx_hash": m1.tx_hash,
+        "token_id": m2.token_id,
+        "scores": scores,
+    }
     # 2) 게이트 미통과: 점수만 반환
     if not res.get("gate_pass"):
         return {
