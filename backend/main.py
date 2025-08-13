@@ -299,8 +299,6 @@ def _call_pre_pipeline_safe(
     w_acc: float,
     w_sinc: float,
     gate: float,
-    pdf_paths: Optional[List[str]],
-    pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,
 ) -> Dict[str, Any]:
     # analyzer.pre_pipeline 을 다양한 시그니처로 시도
     from analyzer import pre_pipeline as _pre  # lazy import
