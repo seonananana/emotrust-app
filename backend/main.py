@@ -10,11 +10,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from hashlib import sha256
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, JSONResponse
 from pydantic import BaseModel, Field
 from dotenv import load_dotenv
+from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 # 시뮬레이션 체인 유틸 (실체 체인 없음)
 from simulate_chain import sim_mint, sim_balance_of
@@ -217,7 +219,8 @@ class LikeOut(BaseModel):
     liked: bool
     token_id: Optional[int] = None
     tx_hash: Optional[str] = None
-
+    likes: Optional[int] = None
+    
 class AnalyzeMintReq(BaseModel):
     text: str
     comments: int = 0
@@ -673,7 +676,7 @@ async def get_post(post_id: int):
 
 # ────────────────────────────────────────────────────────────────────────────────
 # Comments
-# ────────────────────────────────────────────────────────────────────────────────
+# ====================================================================================
 @app.get("/posts/{post_id}/comments")
 async def list_comments(post_id: int):
     if not USE_DB:
@@ -693,6 +696,7 @@ async def list_comments(post_id: int):
             comments = meta.get("comments") or []
             return {"ok": True, "items": comments}
 
+
 @app.post("/posts/{post_id}/comments")
 async def add_comment(post_id: int, c: CommentIn):
     new_item = {
@@ -701,16 +705,21 @@ async def add_comment(post_id: int, c: CommentIn):
         "text": c.text.strip(),
         "created_at": datetime.utcnow().isoformat() + "Z",
     }
+
     if not USE_DB:
         obj = _jsonl_get(post_id)
         if not obj:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
+
         meta = (obj.get("meta") or {})
         comments = meta.get("comments") or []
         comments.append(new_item)
         meta["comments"] = comments
+
+        # 댓글 기반 부가 점수 업데이트 (정의되어 있다고 가정)
         scores_cur = obj.get("scores", {})
         meta["score_extras"] = _score_extras_with_comments(scores_cur, meta)
+
         _jsonl_update_post(int(post_id), {"meta": meta})
         return {"ok": True, "item": new_item, "count": len(comments)}
     else:
@@ -719,19 +728,23 @@ async def add_comment(post_id: int, c: CommentIn):
             o = db.get(Post, int(post_id))  # type: ignore
             if not o:
                 raise HTTPException(status_code=404, detail="NOT_FOUND")
+
             meta = _from_json_str(o.meta_json, {})  # type: ignore
             comments = meta.get("comments") or []
             comments.append(new_item)
             meta["comments"] = comments
+
             scores_cur = _from_json_str(o.scores_json, {})  # type: ignore
             meta["score_extras"] = _score_extras_with_comments(scores_cur, meta)
+
             o.meta_json = _to_json_str(meta)  # type: ignore
             db.commit()
             return {"ok": True, "item": new_item, "count": len(comments)}
 
-# ────────────────────────────────────────────────────────────────────────────────
+
+# ============================================================
 # Likes (공감) + 시뮬 토큰
-# ────────────────────────────────────────────────────────────────────────────────
+# ============================================================
 @app.post("/posts/{post_id}/like", response_model=LikeOut)
 async def like_post(post_id: int, data: LikeIn):
     def _resolve_addr(given: Optional[str]) -> Optional[str]:
@@ -743,48 +756,56 @@ async def like_post(post_id: int, data: LikeIn):
         obj = _jsonl_get(post_id)
         if not obj:
             raise HTTPException(status_code=404, detail="NOT_FOUND")
+
         meta = obj.get("meta") or {}
         likes = int(meta.get("likes") or 0) + 1
         meta["likes"] = likes
 
-        tx_hash = None
-        token_id = None
+        tx_hash: Optional[str] = None
+        token_id: Optional[int] = None
 
         to_addr = _resolve_addr(data.to_address)
         if to_addr:
-            tx_hash, token_id = sim_mint(to_addr)  # 공감 토큰 시뮬
+            # 공감 시뮬 민트
+            tx_hash, token_id = sim_mint(to_addr)
             mints = meta.get("like_mints") or []
             mints.append({
-                "addr": to_addr, "tx_hash": tx_hash, "token_id": token_id,
+                "addr": to_addr,
+                "tx_hash": tx_hash,
+                "token_id": token_id,
                 "created_at": datetime.utcnow().isoformat() + "Z",
             })
             meta["like_mints"] = mints
 
         _jsonl_update_post(int(post_id), {"meta": meta})
-        return LikeOut(liked=True, token_id=token_id, tx_hash=tx_hash)
+        return LikeOut(liked=True, token_id=token_id, tx_hash=tx_hash, likes=likes)
+
     else:
         from sqlalchemy.orm import Session  # type: ignore
         with SessionLocal() as db:  # type: ignore
             o = db.get(Post, int(post_id))  # type: ignore
             if not o:
                 raise HTTPException(status_code=404, detail="NOT_FOUND")
+
             meta = _from_json_str(o.meta_json, {})  # type: ignore
             likes = int(meta.get("likes") or 0) + 1
             meta["likes"] = likes
 
-            tx_hash = None
-            token_id = None
+            tx_hash: Optional[str] = None
+            token_id: Optional[int] = None
 
             to_addr = _resolve_addr(data.to_address)
             if to_addr:
                 tx_hash, token_id = sim_mint(to_addr)
                 mints = meta.get("like_mints") or []
                 mints.append({
-                    "addr": to_addr, "tx_hash": tx_hash, "token_id": token_id,
+                    "addr": to_addr,
+                    "tx_hash": tx_hash,
+                    "token_id": token_id,
                     "created_at": datetime.utcnow().isoformat() + "Z",
                 })
                 meta["like_mints"] = mints
 
             o.meta_json = _to_json_str(meta)  # type: ignore
             db.commit()
-            return LikeOut(liked=True, token_id=token_id, tx_hash=tx_hash)
+            return LikeOut(liked=True, token_id=token_id, tx_hash=tx_hash, likes=likes)
