@@ -324,6 +324,7 @@ async def analyze(
     w_sinc: float = Form(0.5),
     gate: float = Form(0.70),
 ):
+    pass
 except FileNotFoundError as e:
     return JSONResponse(status_code=500, content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)})
 except Exception as e:
