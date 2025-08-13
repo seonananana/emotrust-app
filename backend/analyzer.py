@@ -3,12 +3,55 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Tuple
 
-from acc_score import predict_with_kobert     # Hugging Face 기반 정확성 평가 함수로 유지
+import torch
+import torch.nn as nn
+from transformers import BertTokenizer, BertModel
+
 from pre_score import get_lexicon             # 진정성(사전 기반)
 from preproc_pii import (
     moderate_then_preprocess,
     log_moderation_event,
 )
+
+# ---------------------------
+# KoBERT 회귀 모델 정의
+# ---------------------------
+class KoBERTRegressor(nn.Module):
+    def __init__(self):
+        super(KoBERTRegressor, self).__init__()
+        self.bert = BertModel.from_pretrained("monologg/kobert")
+        self.regressor = nn.Linear(self.bert.config.hidden_size, 1)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        cls_output = outputs.pooler_output
+        return self.regressor(cls_output).squeeze(1)
+
+# ---------------------------
+# 정확성 점수 예측 함수
+# ---------------------------
+def predict_s_acc(text: str) -> float:
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    tokenizer = BertTokenizer.from_pretrained("monologg/kobert")
+
+    model = KoBERTRegressor().to(DEVICE)
+    model.load_state_dict(torch.load("kobert_regression.pt", map_location=DEVICE))
+    model.eval()
+
+    encoded = tokenizer(
+        text,
+        return_tensors='pt',
+        padding='max_length',
+        truncation=True,
+        max_length=64
+    )
+    input_ids = encoded['input_ids'].to(DEVICE)
+    attention_mask = encoded['attention_mask'].to(DEVICE)
+
+    with torch.no_grad():
+        score = model(input_ids, attention_mask).item()
+        return max(0.0, min(1.0, score))
+
 
 def clamp01(x) -> float:
     try:
@@ -74,7 +117,7 @@ def pre_pipeline(
     clean = clean_candidate
     masked = (action == "allow_masked")
 
-    # ---- [3] 진정성(사전 기반) ----
+    # 진정성 계산
     lex = get_lexicon()
     S_sinc, matched, total, cov = lex.sincerity(clean, mode=denom_mode)
 
@@ -85,19 +128,14 @@ def pre_pipeline(
         except Exception:
             S_sinc = clamp01(S_sinc)
 
-    # ---- [4] Hugging Face 기반 정확성 ----
+    # 정확성 계산
     S_fact: Optional[float] = None
-    claims: List[str] = []
-    evidence: Dict[str, Any] = {}
-    need_evidence = False
-
     try:
-        s_acc_raw = predict_with_kobert(clean)
+        s_acc_raw = predict_s_acc(clean)
         S_fact = clamp01(s_acc_raw)
     except Exception:
         S_fact = None
 
-    # ---- [5] 결합/게이트 ----
     gate_norm = normalize_gate(gate)
 
     if S_fact is None:
@@ -124,7 +162,6 @@ def pre_pipeline(
         "masked": bool(masked), "S_fact": S_fact,
         "need_evidence": False, "claims": [], "evidence": {}
     }
-
 
 async def build_pre_signals(content: str, denom_mode: str = "all") -> PreSignals:
     action, clean, _ = moderate_then_preprocess(content)
