@@ -763,10 +763,10 @@ async def list_posts(limit: int = 20, offset: int = 0):
          items_raw = _jsonl_list(limit=limit, offset=offset)
          items = []
          for obj in items_raw:
--            sc = obj.get("scores", {})
-+            meta = obj.get("meta", {}) or {}
-+            sc = obj.get("scores", {}) or {}
-+            extras = _score_extras_with_comments(sc, meta)
+             sc = obj.get("scores", {})
+             meta = obj.get("meta", {}) or {}
+             sc = obj.get("scores", {}) or {}
+             extras = _score_extras_with_comments(sc, meta)
              items.append(
                  {
                      "id": int(obj["id"]),
@@ -784,10 +784,9 @@ async def list_posts(limit: int = 20, offset: int = 0):
              )
          return {"ok": True, "items": items, "count": len(items)}
  
-@@
          for obj in q.all():
--            scores = _from_json_str(obj.scores_json, {})
-+            scores = _from_json_str(obj.scores_json, {})
+             scores = _from_json_str(obj.scores_json, {})
+             scores = _from_json_str(obj.scores_json, {})
 +            meta = _from_json_str(obj.meta_json, {})
 +            extras = _score_extras_with_comments(scores, meta)
              items.append(
@@ -805,10 +804,10 @@ async def list_posts(limit: int = 20, offset: int = 0):
                  }
              )
          return {"ok": True, "items": items, "count": len(items)}
-+
-+# ─────────────────────────────────────────────────────────
-+# 댓글 목록
-+# ─────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────
+# 댓글 목록
+# ─────────────────────────────────────────────────────────
 +@app.get("/posts/{post_id}/comments")
 +async def list_comments(post_id: int):
 +    if not USE_DB:
