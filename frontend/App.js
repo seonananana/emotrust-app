@@ -18,6 +18,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import CommunityApp from './CommunityApp';
 import { SafeAreaView } from 'react-native';
 
+const API = (process.env.EXPO_PUBLIC_API_BASE_URL || '').replace(/\/+$/, '');
 // ====== ENV (ngrok HTTPS만 허용) ======
 const RAW_ENV_URL = process.env.EXPO_PUBLIC_API_BASE_URL;
 const normalizeUrl = (u) => (u || '').trim().replace(/\/+$/, '');
@@ -121,6 +122,7 @@ export default function App() {
     const payload = {
       title,
       content,
+      // ⚠️ 서버로는 보내되, 화면에는 노출하지 않음(민감/내부용)
       scores: {
         S_pre: analysis.S_pre,
         S_sinc: analysis.S_sinc,
@@ -139,7 +141,6 @@ export default function App() {
         ...meta,
         title_len: title.length,
         content_len: content.length,
-        // analyzer의 clean_text(마스킹 텍스트)를 백엔드 토큰 메타에 활용하도록 전달
         masked_text: analysis.clean_text,
       },
       analysis_id: meta?.analysis_id || null,
@@ -279,26 +280,29 @@ export default function App() {
       style={{ flex: 1 }}
     >
       {/* 상단 탭 */}
-<SafeAreaView>
-  <View style={[styles.topTabs, { marginTop: 10 }]}>
-    <TouchableOpacity
-      onPress={() => setTab('analyze')}
-      style={[styles.tabBtn, tab === 'analyze' && styles.tabBtnActive]}
-    >
-      <Text style={[styles.tabTxt, tab === 'analyze' && styles.tabTxtActive]}>분석/등록</Text>
-    </TouchableOpacity>
-    <TouchableOpacity
-      onPress={() => setTab('community')}
-      style={[styles.tabBtn, tab === 'community' && styles.tabBtnActive]}
-    >
-      <Text style={[styles.tabTxt, tab === 'community' && styles.tabTxtActive]}>커뮤니티</Text>
-    </TouchableOpacity>
-  </View>
-</SafeAreaView>
+      <SafeAreaView>
+        <View style={[styles.topTabs, { marginTop: 10 }]}>
+          <TouchableOpacity
+            onPress={() => setTab('analyze')}
+            style={[styles.tabBtn, tab === 'analyze' && styles.tabBtnActive]}
+          >
+            <Text style={[styles.tabTxt, tab === 'analyze' && styles.tabTxtActive]}>분석/등록</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            onPress={() => setTab('community')}
+            style={[styles.tabBtn, tab === 'community' && styles.tabBtnActive]}
+          >
+            <Text style={[styles.tabTxt, tab === 'community' && styles.tabTxtActive]}>커뮤니티</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
 
       {tab === 'community' ? (
         // 커뮤니티 화면
-        <CommunityApp onBackToAnalyze={() => setTab('analyze')} />
+        <CommunityApp
+          apiBase={backendURL}           // ✅ 상세화면이 같은 백엔드로 본문을 불러오도록 전달
+          onBackToAnalyze={() => setTab('analyze')}
+        />
       ) : (
         // 분석/등록 화면
         <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
@@ -333,7 +337,7 @@ export default function App() {
 
           <Text style={styles.label}>내용</Text>
           <TextInput
-            style={[styles.input, { height: 120 }]}
+            style={[styles.input, { height: 120 ]}}
             value={content}
             onChangeText={setContent}
             placeholder="내용을 입력하세요"
@@ -375,10 +379,8 @@ export default function App() {
             <View style={styles.resultBox}>
               <Text style={styles.resultTitle}>📊 분석 결과</Text>
 
-              <Text>
-                최종 점수(S_pre): {(result.result.S_pre * 100).toFixed(1)}점 / 100
-                {'  '}(정규화 {(result.result.S_pre).toFixed(3)})
-              </Text>
+              {/* ❌ 숨김: 최종 점수(S_pre), 커버리지, 토큰 수/매칭, PII, 해시 */}
+              {/* ✅ 공개: 진정성, 정확성, 게이트, 통과여부 */}
               <Text>
                 진정성(S_sinc): {(result.result.S_sinc * 100).toFixed(1)}점 / 100
                 {'  '}(정규화 {(result.result.S_sinc).toFixed(3)})
@@ -396,9 +398,6 @@ export default function App() {
                 </Text>
               )}
 
-              <Text>커버리지: {(result.result.coverage * 100).toFixed(1)}%</Text>
-              <Text>토큰 수: {result.result.total} / 매칭: {result.result.matched}</Text>
-              <Text>PII 처리: {result.result.masked ? '마스킹됨' : '그대로'}</Text>
               <Text>게이트 통과: {result.result.gate_pass ? '✅' : '❌'}</Text>
 
               {saving && (
