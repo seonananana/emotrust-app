@@ -238,34 +238,7 @@ def _await_read_uploadfile(f: UploadFile) -> bytes:
             f.file.seek(0)
         except Exception:
             pass
-
-def _save_pdfs(pdfs: Optional[List[UploadFile]]) -> List[str]:
-    if not pdfs:
-        return []
-    saved_paths: List[str] = []
-    tmpdir = tempfile.mkdtemp(prefix="emotrust_pdf_")
-    for i, f in enumerate(pdfs):
-        name = f.filename or f"evidence_{i}.pdf"
-        if not name.lower().endswith(".pdf"):
-            name = f"{name}.pdf"
-        dst = Path(tmpdir) / name
-        data = _await_read_uploadfile(f)
-        with open(dst, "wb") as out:
-            out.write(data)
-        saved_paths.append(str(dst))
-    return saved_paths
-
-def _collect_pdf_blobs(pdfs: Optional[List[UploadFile]]) -> List[Tuple[str, bytes]]:
-    pdf_blobs: List[Tuple[str, bytes]] = []
-    for f in (pdfs or []):
-        try:
-            blob = f.file.read()
-            print(f"✅ PDF: {f.filename}, Size: {len(blob)} bytes")
-            pdf_blobs.append((f.filename, blob))
-        except Exception as e:
-            print(f"❌ Error reading PDF {f.filename}: {e}")
-    return pdf_blobs
-
+            
 def _to_json_str(obj: Any) -> str:
     try:
         if hasattr(obj, "model_dump"):
