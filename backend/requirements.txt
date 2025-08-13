@@ -9,4 +9,4 @@ torch>=2.0.0
 transformers>=4.30.0
 
 kobert @ git+https://github.com/SKTBrain/KoBERT.git
-kobert-tokenizer @ git+ssh://git@github.com/monologg/KoBERT-tokenizer.git
+kobert-transformers @ git+https://github.com/NLP2K/kobert-transformers.git
