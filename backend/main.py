@@ -476,7 +476,7 @@ def list_posts(limit: int = 20, offset: int = 0):
             items.append({
                 "id": int(obj["id"]),
                 "title": obj["title"],
-                "content": post.content,
+                "content": getattr(post, "content", None),
                 "created_at": obj.get("created_at"),
                 "S_pre": sc.get("S_pre"),
                 "S_sinc": sc.get("S_sinc"),
