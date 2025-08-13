@@ -9,7 +9,7 @@ from tqdm import tqdm
 # ---------------------------
 # 설정
 # ---------------------------
-CSV_PATH = "backend/data/finance_data.csv"
+CSV_PATH = "data/finance_data.csv"
 MODEL_PATH = "kobert_regression.pt"
 BATCH_SIZE = 16
 EPOCHS = 5
