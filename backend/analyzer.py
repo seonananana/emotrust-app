@@ -75,9 +75,9 @@ def pre_pipeline(
     pdf_paths: Optional[List[str]] = None,   # PDF 없으면 검증 불가 플래그만 반환
     # --- 옵션 (운영 중 튜닝을 쉽게 하려면 ENV로 매핑해도 됨) ---
     enable_coverage_boost: bool = True,
-    coverage_boost_k: float = 0.5,           # S_sinc += min(max_boost, k * coverage)
-    coverage_boost_max: float = 0.10,        # 최대 가산치 (예: 0.1 → 10점)
-    min_sinc_if_no_pdf: Optional[float] = 0.20,  # PDF 없음/검증불가일 때 S_sinc 바닥값(비활성화는 None)
+     coverage_boost_k: float = 0.7,          # ← 업 (기존 0.5였다면 0.7로)
+    coverage_boost_max: float = 0.15,       # ← 업 (기존 0.10였다면 0.15로)
+    min_sinc_if_no_pdf: Optional[float] = 0.40,  # ← 업 (0.4 바닥 보장)
 ) -> Dict[str, Any]:
     """
     [1] PII 필터 → [2] 전처리 → [3] 진정성(CSV) → [4] PDF 팩트체크 → [5] 결합/게이트
