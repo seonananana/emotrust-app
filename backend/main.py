@@ -245,7 +245,8 @@ def _save_pdfs(pdfs: Optional[List[UploadFile]]) -> List[str]:
             out.write(data)
         saved_paths.append(str(dst))
     return saved_paths
-# 추가: 업로드 PDF를 (파일명, 바이트) 튜플 리스트로 수집
+
+# 업로드 PDF를 (파일명, 바이트) 튜플 리스트로 수집
 def _collect_pdf_blobs(pdfs: Optional[List[UploadFile]]) -> List[Tuple[str, bytes]]:
     if not pdfs:
         return []
@@ -257,7 +258,7 @@ def _collect_pdf_blobs(pdfs: Optional[List[UploadFile]]) -> List[Tuple[str, byte
         except Exception:
             continue
     return blobs
-    
+
 def _to_json_str(obj: Any) -> str:
     try:
         if hasattr(obj, "model_dump"):
@@ -350,10 +351,14 @@ async def analyze(
 ):
     try:
         text = f"{title}\n\n{content}".strip() if title else content
+
+        # 경로 저장(옵션) + 메모리 바이트(우선)
         pdf_paths = _save_pdfs(pdfs) if pdfs else []
+        pdf_blobs = _collect_pdf_blobs(pdfs) if pdfs else []
 
         out = _call_pre_pipeline_safe(
-            text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate, pdf_paths=pdf_paths
+            text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+            pdf_paths=pdf_paths, pdf_blobs=pdf_blobs
         )
 
         return AnalyzeResponse(
@@ -361,8 +366,8 @@ async def analyze(
             meta={
                 "title": title,
                 "chars": len(text),
-                "pdf_count": len(pdf_paths),
-                "pdf_paths": pdf_paths,
+                "pdf_count": len(pdf_blobs) if pdf_blobs else len(pdf_paths),
+                "pdf_paths": pdf_paths,  # 디버깅용
                 "denom_mode": denom_mode,
                 "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
                 "gate": gate,
@@ -411,7 +416,7 @@ async def analyze_and_mint(req: AnalyzeMintReq):
     # 4) 민팅(서명/전송) → tokenId  (지연 import)
     to_addr = req.to_address or os.getenv("PUBLIC_ADDRESS")
     try:
-        from mint.mint import send_mint, wait_token_id  # ← 여기서 import (lazy)
+        from mint.mint import send_mint, wait_token_id  # ← lazy import
         tx_hash = send_mint(to_addr, meta)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"mint send failed: {e}")
@@ -512,7 +517,8 @@ async def create_post(p: PostIn):
             if not to_addr:
                 raise RuntimeError("PUBLIC_ADDRESS not set")
 
-            # 실제 민팅
+            # 실제 민팅 (lazy import로 보강)
+            from mint.mint import send_mint, wait_token_id
             tx_hash = send_mint(to_addr, meta_token)
             token_id, _ = wait_token_id(tx_hash)
             minted = True
