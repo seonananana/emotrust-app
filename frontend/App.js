@@ -14,7 +14,6 @@ import {
   TouchableOpacity,
   Linking,
 } from 'react-native';
-import * as DocumentPicker from 'expo-document-picker';
 import CommunityApp from './CommunityApp';
 import { SafeAreaView } from 'react-native';
 
@@ -101,7 +100,6 @@ export default function App() {
       weights: { w_acc: 0.5, w_sinc: 0.5 },
       denom_mode: meta?.denom_mode || 'all',
       gate: meta?.gate ?? gate,
-      files: pdfs.map(f => ({ name: f.name, size: f.size })),
       meta: {
         ...meta,
         title_len: title.length,
