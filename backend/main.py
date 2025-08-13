@@ -406,7 +406,103 @@ async def analyze(
     except Exception as e:
         logger.exception("analyze failed")
         return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
-        
+        # 👇 기존 analyze 아래에 추가 (main.py)
+S_THRESHOLD = float(os.getenv("S_THRESHOLD", "0.70"))
+
+@app.post("/analyze-and-mint")
+async def analyze_and_mint_form(
+    title: str = Form(""),
+    content: str = Form(...),
+    denom_mode: str = Form("all"),
+    w_acc: float = Form(0.5),
+    w_sinc: float = Form(0.5),
+    gate: Optional[float] = Form(None),  # 개별 요청에서 오버라이드 가능
+    pdfs: Optional[List[UploadFile]] = File(None),
+    to_address: Optional[str] = Form(None),  # 지정 안 하면 아래에서 자동 추론
+):
+    """
+    멀티파트 업로드 전용 엔드포인트:
+    - title/content + pdfs[] 업로드
+    - 분석 + 게이트 판단
+    - 통과 시 시뮬 민팅(simulate_chain)
+    """
+    try:
+        # 1) 텍스트/파일 수집
+        text = f"{title}\n\n{content}".strip() if title else content
+        pdf_blobs = _collect_pdf_blobs(pdfs)  # (filename, bytes) 리스트
+
+        # 2) 분석 파이프라인 호출 (기존 analyze와 동일 방식)
+        gate_eff = float(gate if gate is not None else S_THRESHOLD)
+        out = _call_pre_pipeline_safe(
+            text=text,
+            denom_mode=denom_mode,
+            w_acc=w_acc,
+            w_sinc=w_sinc,
+            gate=gate_eff,
+            pdf_paths=[],          # 경로 저장 안 씀
+            pdf_blobs=pdf_blobs,   # 핵심
+        )
+
+        # 3) 점수/게이트
+        S_pre = float(out.get("S_pre") or out.get("S_pre_ext") or 0.0)
+        S_acc = out.get("S_acc") or out.get("S_fact")
+        S_sinc = out.get("S_sinc")
+        passed = S_pre >= gate_eff
+
+        resp = {
+            "ok": True,
+            "threshold": gate_eff,
+            "scores": {"S_pre": S_pre, "accuracy": S_acc, "authenticity": S_sinc},
+            "gate_pass": passed,
+            "minted": False,
+            "evidence": out.get("evidence"),
+            "meta": {
+                "title": title,
+                "chars": len(text),
+                "pdf_count": len(pdf_blobs),
+                "denom_mode": denom_mode,
+                "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
+            },
+        }
+
+        if not passed:
+            return resp  # 게이트 미통과 → 민팅 스킵
+
+        # 4) 민팅 대상 주소 결정 (PUBLIC_ADDRESS → PRIVATE_KEY 유도 → 폼 입력)
+        addr = to_address or os.getenv("PUBLIC_ADDRESS")
+        if not addr:
+            pk = os.getenv("PRIVATE_KEY")
+            if pk:
+                try:
+                    from web3 import Web3
+                    addr = Web3().eth.account.from_key(pk).address
+                except Exception:
+                    addr = None
+
+        # 5) 시뮬/실체인 분기 (기본은 시뮬)
+        simulate = os.getenv("EMOTRUST_SIMULATE_CHAIN", "1") == "1"
+        if simulate:
+            if not addr:
+                # 시뮬이라도 수령 주소가 없으면 더미로 진행 가능하게 처리(선호: 주소 요구)
+                # 여기서는 명시적으로 주소 필요로 할게
+                return JSONResponse(status_code=400, content={"ok": False, "detail": "to_address가 필요합니다."})
+            tx_hash, token_id = sim_mint(addr)
+            resp.update({"minted": True, "tx_hash": tx_hash, "tokenId": token_id, "mode": "simulated"})
+            return resp
+
+        # 실체인 (운영 전환 시)
+        if not addr:
+            return JSONResponse(status_code=400, content={"ok": False, "detail": "to_address가 필요합니다."})
+        from mint.mint import send_mint, wait_token_id  # lazy import
+        tx_hash = send_mint(addr, _build_token_meta_from_post(title, content, {"S_acc": S_acc, "S_sinc": S_sinc, "S_pre": S_pre}))
+        token_id, _ = wait_token_id(tx_hash)
+        resp.update({"minted": True, "tx_hash": tx_hash, "tokenId": token_id, "mode": "onchain"})
+        return resp
+
+    except Exception as e:
+        logger.exception("analyze-and-mint failed")
+        return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
+
 @app.post("/analyze-mint")
 async def analyze_and_mint(req: AnalyzeMintReq):
     gate = float(os.getenv("GATE_THRESHOLD", "0.70"))
