@@ -236,7 +236,17 @@ class PostOut(BaseModel):
     gate: float
     analysis_id: str
     created_at: str
+#-------------final 추가    
+class CommentIn(BaseModel):
+    comment: str = Field(..., description="댓글 내용")
 
+class LikeIn(BaseModel):
+    public_address: str = Field(..., description="사용자 지갑 주소")
+
+class LikeOut(BaseModel):
+    liked: bool
+    token_id: Optional[int] = None
+    tx_hash: Optional[str] = None
 class AnalyzeMintReq(BaseModel):
     text: str
     comments: int = 0
@@ -570,7 +580,17 @@ async def analyze_and_mint(req: AnalyzeMintReq):
         "token_id": m2.token_id,
         "scores": scores,
     }
-
+#--------------수정
+@app.get("/posts", response_model=List[PostOut])
+def list_posts(limit: int = 100, offset: int = 0):
+    if USE_SQL:
+        stmt = select(posts_table).limit(limit).offset(offset)
+        rows = conn.execute(stmt).fetchall()
+        return [PostOut(**dict(r)) for r in rows]
+    else:
+        with open(POSTS_JSON, "r", encoding="utf-8") as f:
+            posts = json.load(f)
+        return posts[-limit:]
 @app.post("/posts")
 async def create_post(p: PostIn):
     # 게이트 미통과는 저장 금지(기존 정책 유지)
@@ -868,6 +888,20 @@ async def add_comment(post_id: int, c: CommentIn):
             o.meta_json = _to_json_str(meta)  # type: ignore
             db.commit()
             return {"ok": True, "item": new_item, "count": len(comments)}
+# ─────────────────────────────────────────────────────────────
+# ✅ (4) 댓글 기반 점수 부여 함수
+# 댓글 수에 따라 0.02 * N 점수 부여 (최대 0.1점)
+# ─────────────────────────────────────────────────────────────
+def _score_extras_with_comments(post_id: int) -> float:
+    if USE_SQL:
+        stmt = select(comments_table).where(comments_table.c.post_id == post_id)
+        rows = conn.execute(stmt).fetchall()
+        count = len(rows)
+    else:
+        with open(COMMENTS_JSON, "r", encoding="utf-8") as f:
+            all_comments = json.load(f)
+        count = sum(1 for c in all_comments if c["post_id"] == post_id)
+    return min(count * 0.02, 0.1)
 
 # ─────────────────────────────────────────────────────────
 # 좋아요(+선택적 공감 토큰 민팅; 점수 영향 없음)
