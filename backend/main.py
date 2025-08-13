@@ -324,12 +324,39 @@ async def analyze(
     w_sinc: float = Form(0.5),
     gate: float = Form(0.70),
 ):
-    pass
-except FileNotFoundError as e:
-    return JSONResponse(status_code=500, content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)})
-except Exception as e:
-    logger.exception("analyze failed")
-    return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
+    try:
+        text = f"{title}\n\n{content}".strip()
+        out = _call_pre_pipeline_safe(
+            text=text,
+            denom_mode=denom_mode,
+            w_acc=w_acc,
+            w_sinc=w_sinc,
+            gate=gate,
+        )
+
+        return {
+            "ok": True,
+            "meta": {
+                "title": title,
+                "chars": len(text),
+                "denom_mode": denom_mode,
+                "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
+            },
+            "result": out,
+        }
+
+    except FileNotFoundError as e:
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "FILE_NOT_FOUND", "detail": str(e)},
+        )
+
+    except Exception as e:
+        logger.exception("analyze failed")
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)},
+        )
 
 @app.post("/analyze-and-mint")
 async def analyze_and_mint_form(
@@ -341,7 +368,17 @@ async def analyze_and_mint_form(
     gate: Optional[float] = Form(None),
     to_address: Optional[str] = Form(None),
 ):
-    """멀티파트 업로드 → 분석 → 게이트 통과 시 **시뮬레이션 민팅**만 수행"""
+    try:
+        gate_eff = float(gate if gate is not None else S_THRESHOLD)
+        text = f"{title}\n\n{content}".strip()
+
+        out = _call_pre_pipeline_safe(
+            text=text,
+            denom_mode=denom_mode,
+            w_acc=w_acc,
+            w_sinc=w_sinc,
+            gate=gate_eff,
+        )
 
         S_pre = float(out.get("S_pre") or out.get("S_pre_ext") or 0.0)
         S_acc = out.get("S_acc") or out.get("S_fact")
@@ -357,7 +394,8 @@ async def analyze_and_mint_form(
             "evidence": out.get("evidence"),
             "mode": "simulated",
             "meta": {
-                "title": title, "chars": len(text),
+                "title": title,
+                "chars": len(text),
                 "denom_mode": denom_mode,
                 "weights": {"w_acc": w_acc, "w_sinc": w_sinc},
             },
@@ -366,19 +404,20 @@ async def analyze_and_mint_form(
         if not passed:
             return resp
 
-        # 주소 결정 (web3 미사용)
         addr = to_address or os.getenv("PUBLIC_ADDRESS")
         if not addr:
             return JSONResponse(status_code=400, content={"ok": False, "detail": "to_address 또는 PUBLIC_ADDRESS가 필요합니다."})
 
-        # 시뮬 민팅
         tx_hash, token_id = sim_mint(addr)
         resp.update({"minted": True, "tx_hash": tx_hash, "tokenId": token_id})
         return resp
 
     except Exception as e:
         logger.exception("analyze-and-mint failed")
-        return JSONResponse(status_code=500, content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)})
+        return JSONResponse(
+            status_code=500,
+            content={"ok": False, "error": "INTERNAL_ERROR", "detail": str(e)},
+        )
 
 @app.post("/analyze-mint")
 async def analyze_and_mint(req: AnalyzeMintReq):
