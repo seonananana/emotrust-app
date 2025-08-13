@@ -245,7 +245,19 @@ def _save_pdfs(pdfs: Optional[List[UploadFile]]) -> List[str]:
             out.write(data)
         saved_paths.append(str(dst))
     return saved_paths
-
+# 추가: 업로드 PDF를 (파일명, 바이트) 튜플 리스트로 수집
+def _collect_pdf_blobs(pdfs: Optional[List[UploadFile]]) -> List[Tuple[str, bytes]]:
+    if not pdfs:
+        return []
+    blobs: List[Tuple[str, bytes]] = []
+    for f in pdfs:
+        try:
+            data = _await_read_uploadfile(f)
+            blobs.append((f.filename or "uploaded.pdf", data))
+        except Exception:
+            continue
+    return blobs
+    
 def _to_json_str(obj: Any) -> str:
     try:
         if hasattr(obj, "model_dump"):
@@ -265,17 +277,55 @@ def _from_json_str(s: Optional[str], default):
         return default
 
 def _call_pre_pipeline_safe(
-    text: str, denom_mode: str, w_acc: float, w_sinc: float, gate: float, pdf_paths: Optional[List[str]]
+    text: str,
+    denom_mode: str,
+    w_acc: float,
+    w_sinc: float,
+    gate: float,
+    pdf_paths: Optional[List[str]],
+    pdf_blobs: Optional[List[Tuple[str, bytes]]] = None,
 ) -> Dict[str, Any]:
     """
-    pre_pipeline 시그니처가 버전에 따라 pdf_paths를 안 받을 수도 있어서
-    두 방식 모두 시도. (지연 import로 부팅 안정화)
+    pre_pipeline 시그니처가 버전에 따라
+      - pdf_blobs / pdf_paths 둘 다 받거나
+      - 하나만 받거나
+      - 전혀 안 받을 수도 있어서
+    가장 풍부한 시도 → 단순 시도 순으로 호출한다.
     """
-    from analyzer import pre_pipeline as _pre  # ← 여기서 import (lazy)
+    from analyzer import pre_pipeline as _pre  # lazy import
+
+    # 1) (text, denom_mode, w_acc, w_sinc, gate, pdf_paths, pdf_blobs)
     try:
-        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate, pdf_paths=pdf_paths)
+        return _pre(
+            text=text, denom_mode=denom_mode,
+            w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+            pdf_paths=pdf_paths, pdf_blobs=pdf_blobs
+        )
     except TypeError:
-        return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate)
+        pass
+
+    # 2) (text, denom_mode, w_acc, w_sinc, gate, pdf_blobs)
+    try:
+        return _pre(
+            text=text, denom_mode=denom_mode,
+            w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+            pdf_blobs=pdf_blobs
+        )
+    except TypeError:
+        pass
+
+    # 3) (text, denom_mode, w_acc, w_sinc, gate, pdf_paths)
+    try:
+        return _pre(
+            text=text, denom_mode=denom_mode,
+            w_acc=w_acc, w_sinc=w_sinc, gate=gate,
+            pdf_paths=pdf_paths
+        )
+    except TypeError:
+        pass
+
+    # 4) (text, denom_mode, w_acc, w_sinc, gate)
+    return _pre(text=text, denom_mode=denom_mode, w_acc=w_acc, w_sinc=w_sinc, gate=gate)
 
 # ────────────────────────────────────────────────────────────────────────────────
 # 라우트
