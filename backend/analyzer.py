@@ -3,13 +3,12 @@ import os
 from dataclasses import dataclass
 from typing import Dict, Any, Optional, List, Tuple
 
-from acc_score import predict_with_kobert     # KoBERT 기반 정확성
+from acc_score import predict_with_kobert     # Hugging Face 기반 정확성 평가 함수로 유지
 from pre_score import get_lexicon             # 진정성(사전 기반)
 from preproc_pii import (
     moderate_then_preprocess,
     log_moderation_event,
 )
-
 
 def clamp01(x) -> float:
     try:
@@ -29,7 +28,6 @@ def normalize_gate(g: float, default: float = 0.70) -> float:
         return clamp01(g / 100.0)
     return clamp01(g)
 
-
 @dataclass
 class PreSignals:
     s_acc: float
@@ -38,7 +36,6 @@ class PreSignals:
     def __post_init__(self):
         self.s_acc = clamp01(self.s_acc)
         self.s_sinc = clamp01(self.s_sinc)
-
 
 def pre_pipeline(
     text: str,
@@ -88,7 +85,7 @@ def pre_pipeline(
         except Exception:
             S_sinc = clamp01(S_sinc)
 
-    # ---- [4] KoBERT 기반 정확성 ----
+    # ---- [4] Hugging Face 기반 정확성 ----
     S_fact: Optional[float] = None
     claims: List[str] = []
     evidence: Dict[str, Any] = {}
