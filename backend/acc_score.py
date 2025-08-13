@@ -1,128 +1,134 @@
+import os
 import torch
+import pandas as pd
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, BertModel
-import pandas as pd
-from sklearn.model_selection import train_test_split
+from transformers import BertModel
+from kobert_tokenizer import KoBERTTokenizer
+from sklearn.preprocessing import LabelEncoder
 from tqdm import tqdm
 
-MODEL_PATH = "kobert_regression.pt"
+# ---------------------------
+# 설정
+# ---------------------------
 CSV_PATH = "backend/data/finance_data.csv"
+MODEL_PATH = "kobert_regression.pt"
+BATCH_SIZE = 16
+EPOCHS = 5
+LR = 2e-5
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 1. Dataset class
+# ---------------------------
+# 데이터셋 정의
+# ---------------------------
 class FinanceDataset(Dataset):
-    def __init__(self, texts, labels, tokenizer, max_len=64):
-        self.texts = texts
-        self.labels = labels
+    def __init__(self, dataframe, tokenizer, label_map):
+        self.data = dataframe
         self.tokenizer = tokenizer
-        self.max_len = max_len
+        self.label_map = label_map
 
     def __len__(self):
-        return len(self.texts)
+        return len(self.data)
 
     def __getitem__(self, idx):
-        text = self.texts[idx]
-        label = self.labels[idx]
+        text = str(self.data.iloc[idx]['kor_sentence'])
+        label_str = self.data.iloc[idx]['labels']
+        label = self.label_map[label_str]
 
-        encoded = self.tokenizer(
+        inputs = self.tokenizer.encode_plus(
             text,
-            padding="max_length",
             truncation=True,
-            max_length=self.max_len,
+            padding="max_length",
+            max_length=64,
             return_tensors="pt"
         )
-
         return {
-            "input_ids": encoded["input_ids"].squeeze(0),
-            "attention_mask": encoded["attention_mask"].squeeze(0),
-            "label": torch.tensor(label, dtype=torch.float)
+            'input_ids': inputs['input_ids'].squeeze(0),
+            'attention_mask': inputs['attention_mask'].squeeze(0),
+            'label': torch.tensor(label, dtype=torch.float)
         }
 
-# 2. Regression Model
+# ---------------------------
+# 모델 정의
+# ---------------------------
 class KoBERTRegressor(nn.Module):
     def __init__(self):
         super(KoBERTRegressor, self).__init__()
-        self.bert = BertModel.from_pretrained("skt/kobert-base-v1")
+        self.bert = BertModel.from_pretrained('monologg/kobert')
         self.regressor = nn.Linear(self.bert.config.hidden_size, 1)
 
     def forward(self, input_ids, attention_mask):
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        pooled = outputs.pooler_output  # [CLS] representation
-        return self.regressor(pooled).squeeze(1)  # [batch_size]
+        cls_output = outputs.pooler_output
+        return self.regressor(cls_output).squeeze(1)
 
-# 3. 학습 함수
-def train_model():
+# ---------------------------
+# 학습 함수
+# ---------------------------
+def train():
     df = pd.read_csv(CSV_PATH)
 
-    # 감성 → 정확성 점수 매핑
-    mapping = {"부정": 0.0, "중립": 0.5, "긍정": 1.0}
-    df = df[df["label"].isin(mapping.keys())]  # 유효한 라벨만
-    df["score"] = df["label"].map(mapping)
+    # 라벨 정규화
+    label_map = {
+        'negative': 0.0,
+        'neutral': 0.5,
+        'positive': 1.0
+    }
 
-    tokenizer = BertTokenizer.from_pretrained("skt/kobert-base-v1")
-    train_texts, val_texts, train_labels, val_labels = train_test_split(
-        df["text"].tolist(), df["score"].tolist(), test_size=0.1, random_state=42
-    )
+    tokenizer = KoBERTTokenizer.from_pretrained('skt/kobert-base-v1')
+    dataset = FinanceDataset(df, tokenizer, label_map)
+    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
-    train_dataset = FinanceDataset(train_texts, train_labels, tokenizer)
-    val_dataset = FinanceDataset(val_texts, val_labels, tokenizer)
+    model = KoBERTRegressor().to(DEVICE)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    loss_fn = nn.MSELoss()
 
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=16)
-
-    model = KoBERTRegressor()
-    optimizer = torch.optim.AdamW(model.parameters(), lr=2e-5)
-    criterion = nn.MSELoss()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device)
-
-    epochs = 3
-    for epoch in range(epochs):
-        model.train()
-        total_loss = 0
-        for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
-            labels = batch["label"].to(device)
+    model.train()
+    for epoch in range(EPOCHS):
+        total_loss = 0.0
+        for batch in tqdm(dataloader, desc=f"Epoch {epoch+1}/{EPOCHS}"):
+            input_ids = batch['input_ids'].to(DEVICE)
+            attention_mask = batch['attention_mask'].to(DEVICE)
+            labels = batch['label'].to(DEVICE)
 
             optimizer.zero_grad()
             outputs = model(input_ids, attention_mask)
-            loss = criterion(outputs, labels)
+            loss = loss_fn(outputs, labels)
             loss.backward()
             optimizer.step()
 
             total_loss += loss.item()
+        print(f"Epoch {epoch+1} Loss: {total_loss:.4f}")
 
-        print(f"Epoch {epoch+1} Loss: {total_loss / len(train_loader):.4f}")
-
+    # 저장
     torch.save(model.state_dict(), MODEL_PATH)
-    print(f"✅ Model saved to {MODEL_PATH}")
+    print(f"✅ 모델 저장 완료 → {MODEL_PATH}")
 
-# 4. 예측 함수 (사용자 입력용)
-def predict_accuracy(text):
-    tokenizer = BertTokenizer.from_pretrained("skt/kobert-base-v1")
-    model = KoBERTRegressor()
-    model.load_state_dict(torch.load(MODEL_PATH, map_location=torch.device("cpu")))
+# ---------------------------
+# 추론 함수
+# ---------------------------
+def predict_with_kobert(text: str) -> float:
+    tokenizer = KoBERTTokenizer.from_pretrained('skt/kobert-base-v1')
+    model = KoBERTRegressor().to(DEVICE)
+    model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
     model.eval()
 
-    encoded = tokenizer(
+    inputs = tokenizer.encode_plus(
         text,
-        padding="max_length",
         truncation=True,
+        padding="max_length",
         max_length=64,
         return_tensors="pt"
     )
+    input_ids = inputs['input_ids'].to(DEVICE)
+    attention_mask = inputs['attention_mask'].to(DEVICE)
 
     with torch.no_grad():
-        output = model(
-            encoded["input_ids"],
-            encoded["attention_mask"]
-        )
-        score = output.item()
-        return max(0.0, min(1.0, round(score, 4)))
+        score = model(input_ids, attention_mask).item()
+        return max(0.0, min(1.0, score))  # clamp between 0 and 1
 
-# 5. CLI 테스트용 (선택)
+# ---------------------------
+# 실행
+# ---------------------------
 if __name__ == "__main__":
-    train_model()
-    print("✅ 테스트 결과: ", predict_accuracy("이 회사는 올해 매출이 증가할 것이다."))
+    train()
