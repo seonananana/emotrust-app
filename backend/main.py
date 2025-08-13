@@ -730,34 +730,33 @@ async def get_post(post_id: int):
  
      # DB 모드
 from sqlalchemy.orm import Session  # type: ignore
+
 with SessionLocal() as db:  # type: ignore
-         obj = db.get(Post, post_id)  # type: ignore
-         if not obj:
-             raise HTTPException(status_code=404, detail="NOT_FOUND")
--        return PostOut(
-+        scores = _from_json_str(obj.scores_json, {})  # type: ignore
-+        meta = _from_json_str(obj.meta_json, {})      # type: ignore
-+        extras = _score_extras_with_comments(scores, meta)
-+        meta["score_extras"] = extras
-+        scores = {**scores, **extras}
-+        return PostOut(
-             id=obj.id,
-             title=obj.title,
-             content=obj.content,
--            scores=_from_json_str(obj.scores_json, {}),
-+            scores=scores,
-             weights=_from_json_str(obj.weights_json, {}),
-             files=_from_json_str(obj.files_json, {}),
--            meta=_from_json_str(obj.meta_json, {}),
-+            meta=meta,
-             denom_mode=obj.denom_mode,
-             gate=obj.gate,
-             analysis_id=obj.analysis_id or "",
-             created_at=(obj.created_at.isoformat() + "Z"),
-         )
+    obj = db.get(Post, post_id)  # type: ignore
+    if not obj:
+        raise HTTPException(status_code=404, detail="NOT_FOUND")
+
+    scores = _from_json_str(obj.scores_json, {})  # type: ignore
+    meta = _from_json_str(obj.meta_json, {})      # type: ignore
+    extras = _score_extras_with_comments(scores, meta)
+    meta["score_extras"] = extras
+    scores = {**scores, **extras}
+
+    return PostOut(
+        id=obj.id,
+        title=obj.title,
+        content=obj.content,
+        scores=scores,
+        weights=_from_json_str(obj.weights_json, {}),
+        files=_from_json_str(obj.files_json, {}),
+        meta=meta,
+        denom_mode=obj.denom_mode,
+        gate=obj.gate,
+        analysis_id=obj.analysis_id or "",
+        created_at=(obj.created_at.isoformat() + "Z"),
+    )
  
-@@
- async def list_posts(limit: int = 20, offset: int = 0):
+async def list_posts(limit: int = 20, offset: int = 0):
      if not USE_DB:
          items_raw = _jsonl_list(limit=limit, offset=offset)
          items = []
