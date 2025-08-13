@@ -152,7 +152,7 @@ def pre_pipeline(
         claims = []
         evidence = {}
 
-    # ---- [5] 결합/게이트 ----
+       # ---- [5] 결합/게이트 ----
     gate_norm = normalize_gate(gate)
 
     if S_fact is None:
@@ -190,7 +190,7 @@ def pre_pipeline(
         "tokens": int(total),
         "matched": int(matched),
         "total": int(total),
-        "coverage": float(coverage),   # ← 만약 위에서 cov를 썼다면 여기서도 coverage로 통일
+        "coverage": float(coverage),
 
         "clean_text": clean_text,
         "masked": bool(masked),
