@@ -18,7 +18,7 @@ def normalize_gate(g: float, default: float = 0.70) -> float:
         return g / 100.0
     return g
 
-def run_scoring_pipeline(
+def pre_pipeline(
     text: str,
     denom_mode: str = "all",
     w_acc: float = 0.5,
@@ -42,11 +42,20 @@ def run_scoring_pipeline(
         "S_sinc": round(S_sinc, 3),
         "S_pre": round(S_pre, 3),
         "S_pre_raw": round(S_pre * 100, 1),
-        "gate_used": gate_norm,
+        "gate_used": round(gate_norm, 3),
+        "gate_used_raw": round(gate_norm * 100, 1),
         "gate_pass": gate_pass,
         "matched": matched,
         "total": total,
-        "coverage": cov,
+        "coverage": round(cov, 3),
+        "clean_text": clean,
+        "masked": False,
+        "S_fact": S_acc,
+        "need_evidence": False,
+        "claims": [],
+        "evidence": {},
+        "pii_action": "allow",
+        "pii_reasons": []
     }
 
 def _score_extras_with_comments(sc, meta):
